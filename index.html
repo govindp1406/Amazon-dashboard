@@ -42,9 +42,21 @@
         let expenses = []; // Will be populated by Firestore
 
         // --- App ID & Firebase Config (Provided by Canvas Environment) ---
+        
+        // REVERTED: Use the config provided by the Canvas environment
+        const firebaseConfig = JSON.parse(
+            typeof __firebase_config !== 'undefined' 
+                ? __firebase_config 
+                : '{}'
+        );
+
+        // REVERTED: Use the appId provided by the Canvas environment
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
-        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+        
+        // REVERTED: Use the auth token provided by the Canvas environment
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' 
+            ? __initial_auth_token 
+            : null;
 
         // --- Global Chart Variables ---
         let salesChartInstance = null;
@@ -258,6 +270,7 @@
             }
             
             // --- PRODUCTS LISTENER ---
+            // REVERTED: Use the full collection path with appId
             const productsCollectionPath = `/artifacts/${appId}/users/${userId}/products`;
             console.log("Listening for product changes at:", productsCollectionPath);
             const qProducts = query(collection(db, productsCollectionPath));
@@ -290,6 +303,7 @@
             });
             
             // --- EXPENSES LISTENER ---
+            // REVERTED: Use the full collection path with appId
             const expensesCollectionPath = `/artifacts/${appId}/users/${userId}/expenses`;
             console.log("Listening for expense changes at:", expensesCollectionPath);
             const qExpenses = query(collection(db, expensesCollectionPath));
@@ -540,6 +554,7 @@
                 return showToast('Name and SKU are required.', 'error');
             }
 
+            // REVERTED: Use the full collection path with appId
             const productCollectionPath = `/artifacts/${appId}/users/${userId}/products`;
             
             try {
@@ -670,6 +685,7 @@
         async function deleteProduct(sku) {
             if (!userId) return showToast('Not authenticated.', 'error');
             
+            // REVERTED: Use the full collection path with appId
             const productCollectionPath = `/artifacts/${appId}/users/${userId}/products`;
             const productRef = doc(db, productCollectionPath, sku);
             
@@ -765,6 +781,7 @@
                 const newStock = product.stock - dailyOrders;
 
                 // --- Update Firestore ---
+                // REVERTED: Use the full collection path with appId
                 const productCollectionPath = `/artifacts/${appId}/users/${userId}/products`;
                 const productRef = doc(db, productCollectionPath, selectedSku);
                 
@@ -834,6 +851,7 @@
             const product = products.find(p => p.sku === selectedSku);
             if (product) {
                 // --- Update Firestore ---
+                // REVERTED: Use the full collection path with appId
                 const productCollectionPath = `/artifacts/${appId}/users/${userId}/products`;
                 const productRef = doc(db, productCollectionPath, selectedSku);
                 
@@ -1133,6 +1151,7 @@
             };
             
             // --- Add to Firestore ---
+            // REVERTED: Use the full collection path with appId
             const expensesCollectionPath = `/artifacts/${appId}/users/${userId}/expenses`;
             try {
                 await addDoc(collection(db, expensesCollectionPath), newExpense);
@@ -1205,6 +1224,7 @@
             }
             
             // --- Update Firestore ---
+            // REVERTED: Use the full collection path with appId
             const expenseRef = doc(db, `/artifacts/${appId}/users/${userId}/expenses`, currentEditExpenseId);
             try {
                 await updateDoc(expenseRef, {
@@ -1226,7 +1246,9 @@
         async function deleteExpense(id) {
             if (!userId) return showToast('Not authenticated.', 'error');
             
+            // REVERTED: Use the full collection path with appId
             const expenseRef = doc(db, `/artifacts/${appId}/users/${userId}/expenses`, id);
+Signature: 
             try {
                 await deleteDoc(expenseRef);
                 // UI update handled by onSnapshot
@@ -2298,6 +2320,4 @@
     -->
 </body>
 </html>
-
-
 
