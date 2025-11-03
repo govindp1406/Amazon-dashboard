@@ -223,6 +223,11 @@
         // --- Firebase Initialization & Auth ---
         async function initializeFirebase() {
             try {
+                // Check if config is empty (which it would be if __firebase_config is not found)
+                if (!firebaseConfig.apiKey) {
+                    throw new Error("Firebase config is missing or empty.");
+                }
+
                 app = initializeApp(firebaseConfig);
                 db = getFirestore(app);
                 auth = getAuth(app);
@@ -241,10 +246,12 @@
                         userId = null;
                         userIdDisplay.textContent = 'Authenticating...';
                         try {
+                            // REVERTED: Use initialAuthToken if available (Canvas environment)
                             if (initialAuthToken) {
                                 console.log("Signing in with custom token...");
                                 await signInWithCustomToken(auth, initialAuthToken);
                             } else {
+                                // Fallback for local testing or if token is missing
                                 console.log("Signing in anonymously...");
                                 await signInAnonymously(auth);
                             }
@@ -258,7 +265,8 @@
                 });
             } catch (error) {
                 console.error("Error initializing Firebase:", error);
-                showToast('Firebase configuration error.', 'error');
+                userIdDisplay.textContent = 'Firebase Config Error.';
+                showToast('Firebase configuration error. Check console.', 'error');
             }
         }
         
@@ -1417,13 +1425,7 @@ Signature:
                         return true;
                     })
                     .reduce((sum, sale) => {
-                        // NEW: Use saved profit if available, otherwise calculate
-                        const profit = typeof sale.totalProfit !== 'undefined'
-                            ? (sale.totalProfit || 0)
-                            : ((sale.quantity || 0) * (product.profitPerUnit || 0));
-                        
-                        // This pie chart is for QUANTITY, not profit. Let's fix that.
-                        // The original logic was correct, this pie chart is for sales.
+                        // This pie chart is for QUANTITY, not profit.
                         return sum + (sale.quantity || 0);
                     }, 0);
                 
