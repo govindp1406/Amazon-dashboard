@@ -1,0 +1,2303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Amazon Business Dashboard</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Load Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    
+    <!-- NEW: Import Firebase modules -->
+    <!-- We will initialize Firebase in the script tag below -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { 
+            getAuth, 
+            signInAnonymously, 
+            signInWithCustomToken, 
+            onAuthStateChanged 
+        } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { 
+            getFirestore, 
+            doc, 
+            getDoc, 
+            addDoc, 
+            setDoc, 
+            updateDoc, 
+            deleteDoc, 
+            onSnapshot, 
+            collection, 
+            query, 
+            where, 
+            getDocs,
+            setLogLevel // NEW: For debugging
+        } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // --- Firebase & App State ---
+        let app, db, auth;
+        let userId = null; // Will be set by auth
+        let products = []; // Will be populated by Firestore
+        let expenses = []; // Will be populated by Firestore
+
+        // --- App ID & Firebase Config (Provided by Canvas Environment) ---
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        // --- Global Chart Variables ---
+        let salesChartInstance = null;
+        let salesPieChartInstance = null;
+        let revenuePieChartInstance = null; // This will now be a PROFIT pie chart
+        
+        // --- Global State for Modals ---
+        let currentEditSku = null; // For editing products (using SKU as ID)
+        let currentEditExpenseId = null; // For editing expenses (using Firestore doc ID)
+        let confirmCallback = null; // For the confirmation modal
+
+        // NEW: PIN Lock State
+        let isLocked = true;
+        let pendingPage = null;
+        const APP_PIN = '1453';
+
+        // --- Element Selectors ---
+        // (We will get these inside DOMContentLoaded to ensure they exist)
+        let menuToggle, sidebar, sidebarOverlay, mobileHeaderTitle, userIdDisplay;
+        let navCalculator, navDashboard, navInventory, navRevenue, navExpenses, navAnalysis;
+        // NEW: Nav Lock Button
+        let navLock, lockButtonText, lockButtonIcon, unlockButtonIcon;
+        // NEW: Lock Icons
+        let lockIconCalculator, lockIconInventory, lockIconRevenue, lockIconExpenses, lockIconAnalysis;
+        let pageCalculator, pageDashboard, pageInventory, pageRevenue, pageExpenses, pageAnalysis;
+        let productModal, addProductBtn, modalCancelBtn, productForm, productModalTitle, modalSaveBtn, modalProductName, modalProductSku, modalProductStock;
+        let productGrid, noProductsMessage;
+        let inventoryForm, inventoryProductSelect, inventoryDailyOrders, toast;
+        let profitSetForm, profitProductSelect, profitPerUnitInput, revenueStartDate, revenueEndDate, revenueFilterBtn, revenueClearFilterBtn, profitTotalLabel, profitTotalDisplay, revenueTableBody, revenuePieChartCanvas;
+        let expensesForm, expensesProductName, expensesQuantity, expensesTotalPrice, expensesTotalDisplay, expensesTableBody, expensesStartDate, expensesEndDate, expensesFilterBtn, expensesClearFilterBtn, expensesTotalLabel;
+        let editExpenseModal, editExpenseForm, editExpenseCancelBtn, editExpenseProductName, editExpenseQuantity, editExpenseTotalPrice;
+        let confirmationModal, confirmationMessage, confirmationCancelBtn, confirmationConfirmBtn;
+        let analysisProductSelect, salesChartCanvas, salesPieChartCanvas, analysisStartDate, analysisEndDate, analysisFilterBtn, analysisTotalSold;
+        let calculatorForm, productWeightEl, shippingCostEl;
+        // NEW: PIN Modal
+        let pinModal, pinForm, pinInput, pinCancelBtn;
+
+        /**
+         * Wait for the DOM to be fully loaded before trying to access elements
+         * and initializing the app.
+         */
+        document.addEventListener('DOMContentLoaded', () => {
+            // --- Assign Element Selectors ---
+            menuToggle = document.getElementById('menu-toggle');
+            sidebar = document.getElementById('sidebar');
+            sidebarOverlay = document.getElementById('sidebar-overlay');
+            mobileHeaderTitle = document.getElementById('mobile-header-title');
+            userIdDisplay = document.getElementById('user-id-display'); // NEW
+
+            // Navigation
+            navCalculator = document.getElementById('nav-calculator');
+            navDashboard = document.getElementById('nav-dashboard');
+            navInventory = document.getElementById('nav-inventory');
+            navRevenue = document.getElementById('nav-revenue');
+            navExpenses = document.getElementById('nav-expenses');
+            navAnalysis = document.getElementById('nav-analysis');
+            // NEW: Nav Lock Button
+            navLock = document.getElementById('nav-lock');
+            lockButtonText = document.getElementById('lock-button-text');
+            lockButtonIcon = document.getElementById('lock-button-icon');
+            unlockButtonIcon = document.getElementById('unlock-button-icon');
+
+            // NEW: Lock Icons
+            lockIconCalculator = document.getElementById('lock-icon-calculator');
+            lockIconInventory = document.getElementById('lock-icon-inventory');
+            lockIconRevenue = document.getElementById('lock-icon-revenue');
+            lockIconExpenses = document.getElementById('lock-icon-expenses');
+            lockIconAnalysis = document.getElementById('lock-icon-analysis');
+            
+            // Pages
+            pageCalculator = document.getElementById('page-calculator');
+            pageDashboard = document.getElementById('page-dashboard');
+            pageInventory = document.getElementById('page-inventory');
+            pageRevenue = document.getElementById('page-revenue');
+            pageExpenses = document.getElementById('page-expenses');
+            pageAnalysis = document.getElementById('page-analysis');
+            
+            // Product Modal
+            productModal = document.getElementById('product-modal');
+            addProductBtn = document.getElementById('add-product-btn');
+            modalCancelBtn = document.getElementById('modal-cancel-btn');
+            productForm = document.getElementById('product-form');
+            productModalTitle = document.getElementById('product-modal-title');
+            modalSaveBtn = document.getElementById('modal-save-btn');
+            modalProductName = document.getElementById('modal-product-name');
+            modalProductSku = document.getElementById('modal-product-sku');
+            modalProductStock = document.getElementById('modal-product-stock');
+
+            // Dashboard
+            productGrid = document.getElementById('product-grid');
+            noProductsMessage = document.getElementById('no-products-message');
+
+            // Inventory
+            inventoryForm = document.getElementById('inventory-form');
+            inventoryProductSelect = document.getElementById('inventory-product-select');
+            inventoryDailyOrders = document.getElementById('inventory-daily-orders');
+            toast = document.getElementById('toast');
+            
+            // Revenue (Profit) Page
+            profitSetForm = document.getElementById('profit-set-form');
+            profitProductSelect = document.getElementById('profit-product-select');
+            profitPerUnitInput = document.getElementById('profit-per-unit-input');
+            revenueStartDate = document.getElementById('revenue-start-date');
+            revenueEndDate = document.getElementById('revenue-end-date');
+            revenueFilterBtn = document.getElementById('revenue-filter-btn');
+            revenueClearFilterBtn = document.getElementById('revenue-clear-filter-btn');
+            profitTotalLabel = document.getElementById('profit-total-label');
+            profitTotalDisplay = document.getElementById('profit-total-display');
+            revenueTableBody = document.getElementById('revenue-table-body');
+            revenuePieChartCanvas = document.getElementById('revenue-pie-chart');
+
+            // Expenses Page
+            expensesForm = document.getElementById('expenses-form');
+            expensesProductName = document.getElementById('expenses-product-name');
+            expensesQuantity = document.getElementById('expenses-quantity');
+            expensesTotalPrice = document.getElementById('expenses-total-price');
+            expensesTotalDisplay = document.getElementById('expenses-total-display');
+            expensesTableBody = document.getElementById('expenses-table-body');
+            expensesStartDate = document.getElementById('expenses-start-date');
+            expensesEndDate = document.getElementById('expenses-end-date');
+            expensesFilterBtn = document.getElementById('expenses-filter-btn');
+            expensesClearFilterBtn = document.getElementById('expenses-clear-filter-btn');
+            expensesTotalLabel = document.getElementById('expenses-total-label');
+            
+            // Edit Expense Modal
+            editExpenseModal = document.getElementById('edit-expense-modal');
+            editExpenseForm = document.getElementById('edit-expense-form');
+            editExpenseCancelBtn = document.getElementById('edit-expense-cancel-btn');
+            editExpenseProductName = document.getElementById('edit-expense-product-name');
+            editExpenseQuantity = document.getElementById('edit-expense-quantity');
+            editExpenseTotalPrice = document.getElementById('edit-expense-total-price');
+
+            // Confirmation Modal
+            confirmationModal = document.getElementById('confirmation-modal');
+            confirmationMessage = document.getElementById('confirmation-message');
+            confirmationCancelBtn = document.getElementById('confirmation-cancel-btn');
+            confirmationConfirmBtn = document.getElementById('confirmation-confirm-btn');
+
+            // Analysis Page
+            analysisProductSelect = document.getElementById('analysis-product-select');
+            salesChartCanvas = document.getElementById('sales-chart');
+            salesPieChartCanvas = document.getElementById('sales-pie-chart');
+            analysisStartDate = document.getElementById('analysis-start-date');
+            analysisEndDate = document.getElementById('analysis-end-date');
+            analysisFilterBtn = document.getElementById('analysis-filter-btn');
+            analysisTotalSold = document.getElementById('analysis-total-sold');
+
+            // Calculator Page
+            calculatorForm = document.getElementById('profit-form');
+            productWeightEl = document.getElementById('product-weight');
+            shippingCostEl = document.getElementById('shipping-cost');
+            
+            // NEW: PIN Modal
+            pinModal = document.getElementById('pin-modal');
+            pinForm = document.getElementById('pin-form');
+            pinInput = document.getElementById('pin-input');
+            pinCancelBtn = document.getElementById('pin-cancel-btn');
+
+            // --- Initialize Firebase and App ---
+            startApp();
+        });
+
+
+        // --- Firebase Initialization & Auth ---
+        async function initializeFirebase() {
+            try {
+                app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+                setLogLevel('Debug'); // Enable Firestore logging
+                console.log("Firebase initialized.");
+
+                onAuthStateChanged(auth, async (user) => {
+                    if (user) {
+                        console.log("User is signed in:", user.uid);
+                        userId = user.uid;
+                        userIdDisplay.textContent = `User ID: ${userId}`; // Display User ID
+                        // User is authenticated, now we can set up our data listeners
+                        setupFirestoreListeners();
+                    } else {
+                        console.log("User is not signed in. Attempting to sign in...");
+                        userId = null;
+                        userIdDisplay.textContent = 'Authenticating...';
+                        try {
+                            if (initialAuthToken) {
+                                console.log("Signing in with custom token...");
+                                await signInWithCustomToken(auth, initialAuthToken);
+                            } else {
+                                console.log("Signing in anonymously...");
+                                await signInAnonymously(auth);
+                            }
+                            // onAuthStateChanged will run again after successful sign-in
+                        } catch (error) {
+                            console.error("Error during sign-in:", error);
+                            userIdDisplay.textContent = 'Authentication Failed.';
+                            showToast('Could not connect to database.', 'error');
+                        }
+                    }
+                });
+            } catch (error) {
+                console.error("Error initializing Firebase:", error);
+                showToast('Firebase configuration error.', 'error');
+            }
+        }
+        
+        // --- Firestore Data Listeners ---
+        function setupFirestoreListeners() {
+            if (!userId) {
+                console.error("Cannot setup listeners: No User ID.");
+                return;
+            }
+            
+            // --- PRODUCTS LISTENER ---
+            const productsCollectionPath = `/artifacts/${appId}/users/${userId}/products`;
+            console.log("Listening for product changes at:", productsCollectionPath);
+            const qProducts = query(collection(db, productsCollectionPath));
+            
+            onSnapshot(qProducts, (snapshot) => {
+                console.log("Products snapshot received.");
+                let fetchedProducts = [];
+                snapshot.forEach((doc) => {
+                    // We use the doc.id (which is the SKU) as the product's SKU
+                    fetchedProducts.push({ ...doc.data(), sku: doc.id });
+                });
+                
+                // Sort products by name for consistent display
+                products = fetchedProducts.sort((a, b) => a.name.localeCompare(b.name));
+                
+                // --- Re-render all dependent components ---
+                renderDashboard();
+                populateInventoryDropdown();
+                populateAnalysisDropdown();
+                populateProfitSetDropdown();
+                renderRevenuePage(); 
+                
+                if (pageAnalysis.classList.contains('hidden') === false) {
+                    updateAnalysis();
+                }
+
+            }, (error) => {
+                console.error("Error listening to products:", error);
+                showToast('Error fetching products.', 'error');
+            });
+            
+            // --- EXPENSES LISTENER ---
+            const expensesCollectionPath = `/artifacts/${appId}/users/${userId}/expenses`;
+            console.log("Listening for expense changes at:", expensesCollectionPath);
+            const qExpenses = query(collection(db, expensesCollectionPath));
+            
+            onSnapshot(qExpenses, (snapshot) => {
+                console.log("Expenses snapshot received.");
+                let fetchedExpenses = [];
+                snapshot.forEach((doc) => {
+                    fetchedExpenses.push({ ...doc.data(), id: doc.id });
+                });
+                
+                // Sort by date (newest first) *after* fetching
+                expenses = fetchedExpenses.sort((a, b) => new Date(b.dateTime) - new Date(a.dateTime));
+                
+                // Re-render the expenses page
+                renderExpensesPage();
+                
+            }, (error) => {
+                console.error("Error listening to expenses:", error);
+                showToast('Error fetching expenses.', 'error');
+            });
+        }
+
+
+        // --- Mobile Sidebar Toggle ---
+        function toggleSidebar() {
+            sidebar.classList.toggle('-translate-x-full');
+            sidebarOverlay.classList.toggle('hidden');
+        }
+
+        // --- Page Navigation Logic (UPDATED) ---
+        function setActivePage(pageName) {
+            // NEW: Check for lock
+            if (pageName !== 'dashboard' && isLocked) {
+                console.log(`Page ${pageName} is locked. Showing PIN modal.`);
+                pendingPage = pageName; // Remember where the user wanted to go
+                openPinModal();
+                return; // Stop navigation
+            }
+            
+            // Hide all pages
+            pageCalculator.classList.add('hidden');
+            pageDashboard.classList.add('hidden');
+            pageInventory.classList.add('hidden');
+            pageRevenue.classList.add('hidden');
+            pageExpenses.classList.add('hidden');
+            pageAnalysis.classList.add('hidden');
+
+            // Remove active style from all nav links
+            const navLinks = [navCalculator, navDashboard, navInventory, navRevenue, navExpenses, navAnalysis];
+            navLinks.forEach(link => {
+                link.classList.remove('bg-blue-600', 'text-white');
+                link.classList.add('hover:bg-gray-700');
+            });
+            
+            // Show the active page and set nav style
+            if (pageName === 'calculator') {
+                pageCalculator.classList.remove('hidden');
+                navCalculator.classList.add('bg-blue-600', 'text-white');
+                navCalculator.classList.remove('hover:bg-gray-700');
+                mobileHeaderTitle.textContent = 'Profit Calculator';
+            } else if (pageName === 'dashboard') {
+                pageDashboard.classList.remove('hidden');
+                navDashboard.classList.add('bg-blue-600', 'text-white');
+                navDashboard.classList.remove('hover:bg-gray-700');
+                mobileHeaderTitle.textContent = 'Active Products';
+                // Data is rendered by onSnapshot
+            } else if (pageName === 'inventory') {
+                pageInventory.classList.remove('hidden');
+                navInventory.classList.add('bg-blue-600', 'text-white');
+                navInventory.classList.remove('hover:bg-gray-700');
+                mobileHeaderTitle.textContent = 'Inventory';
+                // Dropdown is populated by onSnapshot
+            } else if (pageName === 'revenue') { 
+                pageRevenue.classList.remove('hidden');
+                navRevenue.classList.add('bg-blue-600', 'text-white');
+                navRevenue.classList.remove('hover:bg-gray-700');
+                mobileHeaderTitle.textContent = 'Profit Tracking';
+                revenueStartDate.value = '';
+                revenueEndDate.value = '';
+                // Dropdown & table are populated by onSnapshot
+                renderRevenuePage(); // Re-render to apply blank filters
+            } else if (pageName === 'expenses') { 
+                pageExpenses.classList.remove('hidden');
+                navExpenses.classList.add('bg-blue-600', 'text-white');
+                navExpenses.classList.remove('hover:bg-gray-700');
+                mobileHeaderTitle.textContent = 'Expenses';
+                expensesStartDate.value = '';
+                expensesEndDate.value = '';
+                // Table is populated by onSnapshot
+                renderExpensesPage(); // Re-render to apply blank filters
+            } else if (pageName === 'analysis') {
+                pageAnalysis.classList.remove('hidden');
+                navAnalysis.classList.add('bg-blue-600', 'text-white');
+                navAnalysis.classList.remove('hover:bg-gray-700');
+                mobileHeaderTitle.textContent = 'Analysis';
+                
+                const today = new Date();
+                const thirtyDaysAgo = new Date();
+                thirtyDaysAgo.setDate(today.getDate() - 30);
+                
+                analysisEndDate.value = today.toISOString().split('T')[0];
+                analysisStartDate.value = thirtyDaysAgo.toISOString().split('T')[0];
+
+                // Dropdown is populated by onSnapshot
+                updateAnalysis();
+            }
+
+            // Close sidebar on mobile after navigation
+            if (window.innerWidth < 768) {
+                toggleSidebar();
+            }
+        }
+        
+        // --- NEW: PIN Modal Logic ---
+        function openPinModal() {
+            pinInput.value = '';
+            pinModal.classList.remove('hidden');
+            pinModal.classList.add('flex');
+            pinInput.focus();
+        }
+
+        function closePinModal() {
+            pendingPage = null; // Forget where we were going
+            pinInput.value = '';
+            pinModal.classList.add('hidden');
+            pinModal.classList.remove('flex');
+        }
+
+        function handlePinSubmit(e) {
+            e.preventDefault();
+            const enteredPin = pinInput.value;
+            
+            if (enteredPin === APP_PIN) {
+                // Correct PIN
+                isLocked = false;
+                showToast('Dashboard unlocked!', 'success');
+                pinModal.classList.add('hidden');
+                pinModal.classList.remove('flex');
+                updateLockIcons();
+                
+                // Check if we were trying to navigate somewhere
+                if (pendingPage) {
+                    setActivePage(pendingPage);
+                    pendingPage = null;
+                }
+            } else {
+                // Incorrect PIN
+                showToast('Incorrect PIN. Please try again.', 'error');
+                pinInput.value = '';
+                pinInput.focus();
+            }
+        }
+
+        // --- NEW: Lock/Unlock UI Updates ---
+        function updateLockIcons() {
+            const icons = [lockIconCalculator, lockIconInventory, lockIconRevenue, lockIconExpenses, lockIconAnalysis];
+            if (isLocked) {
+                // Show all locks
+                icons.forEach(icon => icon.classList.remove('hidden'));
+                // Update main lock button
+                lockButtonText.textContent = 'Lock Dashboard';
+                lockButtonIcon.classList.remove('hidden');
+                unlockButtonIcon.classList.add('hidden');
+                navLock.classList.add('bg-red-600', 'hover:bg-red-700');
+                navLock.classList.remove('bg-green-600', 'hover:bg-green-700');
+            } else {
+                // Hide all locks
+                icons.forEach(icon => icon.classList.add('hidden'));
+                // Update main lock button
+                lockButtonText.textContent = 'Unlock Dashboard';
+                lockButtonIcon.classList.add('hidden');
+                unlockButtonIcon.classList.remove('hidden');
+                navLock.classList.add('bg-green-600', 'hover:bg-green-700');
+                navLock.classList.remove('bg-red-600', 'hover:bg-red-700');
+            }
+        }
+
+        function toggleAppLock() {
+            if (isLocked) {
+                // It's already locked, user probably wants to unlock
+                openPinModal();
+            } else {
+                // It's unlocked, so lock it
+                isLocked = true;
+                showToast('Dashboard locked.', 'success');
+                updateLockIcons();
+                // Force user back to the only unlocked page
+                setActivePage('dashboard');
+            }
+        }
+        
+        // --- Add/Edit Product Modal Logic (UPDATED for Firestore) ---
+        
+        // Open modal in "Add" mode
+        function openAddProductModal() {
+            currentEditSku = null; 
+            productForm.reset();
+            productModalTitle.textContent = 'Add New Product';
+            modalSaveBtn.textContent = 'Save Product';
+            modalProductSku.readOnly = false;
+            modalProductSku.classList.remove('bg-gray-100');
+            productModal.classList.remove('hidden');
+            productModal.classList.add('flex');
+        }
+
+        // Open modal in "Edit" mode
+        function openEditProductModal(sku) {
+            const product = products.find(p => p.sku === sku);
+            if (!product) return;
+            
+            currentEditSku = sku; // Set "edit" mode
+            productForm.reset();
+            productModalTitle.textContent = 'Edit Product';
+            modalSaveBtn.textContent = 'Save Changes';
+            
+            // Populate form
+            modalProductName.value = product.name;
+            modalProductSku.value = product.sku;
+            modalProductStock.value = product.stock;
+            
+            // Make SKU read-only
+            modalProductSku.readOnly = true; 
+            modalProductSku.classList.add('bg-gray-100');
+            
+            productModal.classList.remove('hidden');
+            productModal.classList.add('flex');
+        }
+
+        // Close and reset the product modal
+        function closeProductModal() {
+            currentEditSku = null;
+            productForm.reset();
+            productModal.classList.add('hidden');
+            productModal.classList.remove('flex');
+        }
+
+        // Handle Add/Edit Product Form Submission
+        async function handleProductFormSubmit(e) {
+            e.preventDefault();
+            if (!userId) return showToast('Not authenticated.', 'error');
+            
+            const newName = modalProductName.value;
+            const newSku = modalProductSku.value;
+            const newStock = parseInt(modalProductStock.value) || 0;
+            
+            if (!newName || !newSku) {
+                return showToast('Name and SKU are required.', 'error');
+            }
+
+            const productCollectionPath = `/artifacts/${appId}/users/${userId}/products`;
+            
+            try {
+                if (currentEditSku) {
+                    // --- EDIT MODE ---
+                    // We only update name and stock. SKU (the ID) cannot be changed.
+                    const productRef = doc(db, productCollectionPath, currentEditSku);
+                    await updateDoc(productRef, {
+                        name: newName,
+                        stock: newStock
+                    });
+                    showToast('Product updated successfully!', 'success');
+                } else {
+                    // --- ADD MODE ---
+                    // Check if SKU (document ID) already exists
+                    const productRef = doc(db, productCollectionPath, newSku);
+                    const docSnap = await getDoc(productRef);
+                    
+                    if (docSnap.exists()) {
+                        showToast('SKU already exists. Please use a unique SKU.', 'error');
+                        return;
+                    }
+                    
+                    // SKU does not exist, create new product
+                    const newProduct = { 
+                        name: newName, 
+                        // sku is the doc ID, no need to store it in the doc
+                        stock: newStock, 
+                        profitPerUnit: 0, // Default profit
+                        salesHistory: []
+                    };
+                    
+                    // Use setDoc to create a doc with a specific ID (the SKU)
+                    await setDoc(productRef, newProduct);
+                    showToast('Product added successfully!', 'success');
+                }
+                
+                // UI updates are handled by the onSnapshot listener
+                closeProductModal();
+
+            } catch (error) {
+                console.error("Error saving product:", error);
+                showToast('Error saving product.', 'error');
+            }
+        }
+
+
+        // --- Sales Calculation Helper ---
+        function calculateTotalSales(product, days) {
+            const dateLimit = new Date();
+            dateLimit.setDate(dateLimit.getDate() - days);
+            
+            const recentSales = product.salesHistory.filter(entry => new Date(entry.date) >= dateLimit);
+            const total = recentSales.reduce((sum, entry) => sum + entry.quantity, 0);
+            return total;
+        }
+
+        // --- Dashboard Rendering (UPDATED) ---
+        function renderDashboard() {
+            productGrid.innerHTML = ''; // Clear the existing grid
+
+            if (products.length === 0) {
+                noProductsMessage.classList.remove('hidden');
+            } else {
+                noProductsMessage.classList.add('hidden');
+                
+                // products array is already sorted by name from onSnapshot
+                products.forEach(product => {
+                    const sales30d = calculateTotalSales(product, 30);
+
+                    const card = document.createElement('div');
+                    card.className = 'bg-white p-6 rounded-xl shadow-lg flex flex-col';
+                    card.innerHTML = `
+                        <div class="flex-grow">
+                            <h3 class="text-lg font-semibold text-gray-800 mb-3">${product.name}</h3>
+                            <div class="space-y-2">
+                                <div class="flex justify-between items-center">
+                                    <span class="text-sm font-medium text-gray-500">Current Stock:</span>
+                                    <span class="text-lg font-bold text-gray-800">${product.stock}</span>
+                                </div>
+                                <div class="flex justify-between items-center">
+                                    <span class="text-sm font-medium text-gray-500">Sales (30d):</span>
+                                    <span class="text-lg font-bold text-gray-800">${sales30d}</span>
+                                </div>
+                                <div class="flex justify-between items-center">
+                                    <span class="text-sm font-medium text-gray-500">SKU:</span>
+                                    <span class="text-sm font-mono text-gray-600">${product.sku}</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="mt-4 pt-4 border-t border-gray-200 flex space-x-2">
+                            <button class="edit-product-btn w-full text-sm bg-gray-100 text-gray-700 py-2 px-3 rounded-lg font-semibold hover:bg-gray-200" data-sku="${product.sku}">
+                                Edit
+                            </button>
+                            <button class="delete-product-btn w-full text-sm bg-red-100 text-red-700 py-2 px-3 rounded-lg font-semibold hover:bg-red-200" data-sku="${product.sku}">
+                                Delete
+                            </button>
+                        </div>
+                    `;
+                    productGrid.appendChild(card);
+                });
+            }
+        }
+        
+        // --- Dashboard Button Listeners (Edit/Delete) ---
+        function handleDashboardClick(e) {
+            const editBtn = e.target.closest('.edit-product-btn');
+            const deleteBtn = e.target.closest('.delete-product-btn');
+
+            if (editBtn) {
+                const sku = editBtn.dataset.sku;
+                openEditProductModal(sku);
+            }
+
+            if (deleteBtn) {
+                const sku = deleteBtn.dataset.sku;
+                const product = products.find(p => p.sku === sku);
+                if (product) {
+                    showConfirmationModal(
+                        `Are you sure you want to delete "${product.name}"? This action cannot be undone.`,
+                        () => deleteProduct(sku) // Pass the callback
+                    );
+                }
+            }
+        }
+        
+        // --- Delete Product (UPDATED for Firestore) ---
+        async function deleteProduct(sku) {
+            if (!userId) return showToast('Not authenticated.', 'error');
+            
+            const productCollectionPath = `/artifacts/${appId}/users/${userId}/products`;
+            const productRef = doc(db, productCollectionPath, sku);
+            
+            try {
+                await deleteDoc(productRef);
+                // UI update is handled by onSnapshot
+                hideConfirmationModal();
+                showToast('Product deleted successfully.', 'success');
+            } catch (error) {
+                console.error("Error deleting product:", error);
+                hideConfirmationModal();
+                showToast('Error deleting product.', 'error');
+            }
+        }
+
+
+        // --- Inventory Page Logic (UPDATED for Firestore) ---
+        function populateInventoryDropdown() {
+            inventoryProductSelect.innerHTML = ''; // Clear existing options
+            // products array is already sorted
+            if (products.length === 0) {
+                inventoryProductSelect.innerHTML = '<option disabled selected>No products available</option>';
+            } else {
+                inventoryProductSelect.innerHTML = '<option value="" disabled selected>Choose a product</option>';
+                products.forEach(product => {
+                    const option = document.createElement('option');
+                    option.value = product.sku; // Use SKU as the unique identifier
+                    option.textContent = `${product.name} (SKU: ${product.sku})`;
+                    inventoryProductSelect.appendChild(option);
+                });
+            }
+        }
+
+        async function handleInventorySubmit(e) {
+            e.preventDefault();
+            if (!userId) return showToast('Not authenticated.', 'error');
+            
+            const selectedSku = inventoryProductSelect.value;
+            const dailyOrders = parseInt(inventoryDailyOrders.value) || 0;
+
+            if (!selectedSku) {
+                return showToast('Please select a product.', 'error');
+            }
+            if (dailyOrders <= 0) {
+                return showToast('Please enter a valid number of orders.', 'error');
+            }
+
+            const product = products.find(p => p.sku === selectedSku);
+
+            if (product) {
+                if (product.stock < dailyOrders) {
+                    showToast(`Cannot fulfill ${dailyOrders} orders. Only ${product.stock} in stock.`, 'error');
+                    return;
+                }
+
+                // Create a deep copy of salesHistory to modify
+                const newSalesHistory = JSON.parse(JSON.stringify(product.salesHistory));
+                
+                // --- UPDATE salesHistory ---
+                const today = new Date().toISOString().split('T')[0]; // Get YYYY-MM-DD
+                const existingEntry = newSalesHistory.find(entry => entry.date === today);
+
+                // NEW: Get profit at the moment of sale
+                const currentProfit = product.profitPerUnit || 0;
+                const profitForThisBatch = dailyOrders * currentProfit;
+                
+                if (existingEntry) {
+                    // This entry already exists for today. Update it.
+                    const oldTotalProfit = existingEntry.totalProfit;
+                    
+                    // NEW: Check if data is old (no totalProfit) or new
+                    if (typeof oldTotalProfit === 'undefined') {
+                        // This is old data. We must migrate it.
+                        // We'll assume the current profit applied to the old quantity, and lock it in.
+                        console.warn("Migrating old sales data for:", selectedSku);
+                        existingEntry.totalProfit = (existingEntry.quantity * currentProfit) + profitForThisBatch;
+                    } else {
+                        // This is new data. Just add the new profit.
+                        existingEntry.totalProfit = oldTotalProfit + profitForThisBatch;
+                    }
+                    existingEntry.quantity += dailyOrders;
+
+                } else {
+                    // This is a new entry for today.
+                    newSalesHistory.push({ 
+                        date: today, 
+                        quantity: dailyOrders, 
+                        totalProfit: profitForThisBatch // NEW: Store the calculated profit
+                    });
+                }
+                
+                // Update stock
+                const newStock = product.stock - dailyOrders;
+
+                // --- Update Firestore ---
+                const productCollectionPath = `/artifacts/${appId}/users/${userId}/products`;
+                const productRef = doc(db, productCollectionPath, selectedSku);
+                
+                try {
+                    await updateDoc(productRef, {
+                        stock: newStock,
+                        salesHistory: newSalesHistory
+                    });
+                    
+                    // UI update is handled by onSnapshot
+                    inventoryForm.reset();
+                    inventoryProductSelect.value = "";
+                    showToast('Stock updated successfully!', 'success');
+                    
+                } catch (error) {
+                    console.error("Error updating stock:", error);
+                    showToast('Error updating stock.', 'error');
+                }
+                
+            } else {
+                showToast('Error: Could not find product.', 'error');
+            }
+        }
+        
+        // --- Revenue Page Logic (REBUILT & UPDATED for Firestore) ---
+        
+        function populateProfitSetDropdown() {
+            profitProductSelect.innerHTML = ''; // Clear existing options
+            
+            if (products.length === 0) {
+                profitProductSelect.innerHTML = '<option disabled selected>No products available</option>';
+            } else {
+                profitProductSelect.innerHTML = '<option value="" disabled selected>Choose a product</option>';
+                products.forEach(product => {
+                    const option = document.createElement('option');
+                    option.value = product.sku;
+                    option.textContent = `${product.name} (SKU: ${product.sku})`;
+                    profitProductSelect.appendChild(option);
+                });
+            }
+            // Clear the input field
+            profitPerUnitInput.value = '';
+        }
+
+        function handleProfitProductSelect() {
+            const selectedSku = profitProductSelect.value;
+            const product = products.find(p => p.sku === selectedSku);
+            if (product) {
+                profitPerUnitInput.value = (product.profitPerUnit || 0).toFixed(2);
+            }
+        }
+
+        async function handleProfitSetSubmit(e) {
+            e.preventDefault();
+            if (!userId) return showToast('Not authenticated.', 'error');
+            
+            const selectedSku = profitProductSelect.value;
+            const profitPerUnit = parseFloat(profitPerUnitInput.value) || 0;
+
+            if (!selectedSku) {
+                return showToast('Please select a product.', 'error');
+            }
+            if (profitPerUnit < 0) {
+                return showToast('Profit cannot be negative.', 'error');
+            }
+
+            const product = products.find(p => p.sku === selectedSku);
+            if (product) {
+                // --- Update Firestore ---
+                const productCollectionPath = `/artifacts/${appId}/users/${userId}/products`;
+                const productRef = doc(db, productCollectionPath, selectedSku);
+                
+                try {
+                    await updateDoc(productRef, {
+                        profitPerUnit: profitPerUnit
+                    });
+                    
+                    // UI update handled by onSnapshot
+                    profitSetForm.reset();
+                    profitProductSelect.value = "";
+                    showToast(`Profit for ${product.name} updated!`, 'success');
+                } catch (error) {
+                    console.error("Error updating profit:", error);
+                    showToast('Error updating profit.', 'error');
+                }
+            }
+        }
+
+
+        function renderRevenuePage() {
+            revenueTableBody.innerHTML = '';
+            let overallTotalProfit = 0;
+
+            const startDate = revenueStartDate.value;
+            const endDate = revenueEndDate.value;
+
+            // 1. Create a flat list of all sales
+            let allSales = [];
+            products.forEach(product => {
+                // Ensure salesHistory exists
+                if (Array.isArray(product.salesHistory)) {
+                    product.salesHistory.forEach(sale => {
+                        // Filter by date
+                        if (startDate && sale.date < startDate) return;
+                        if (endDate && sale.date > endDate) return;
+
+                        // NEW: Logic to handle both old and new data formats
+                        let totalProfit, profitPerUnit;
+                        
+                        if (typeof sale.totalProfit !== 'undefined') {
+                            // NEW data format: Use the saved totalProfit
+                            totalProfit = sale.totalProfit;
+                            profitPerUnit = sale.quantity > 0 ? (totalProfit / sale.quantity) : 0;
+                        } else {
+                            // OLD data format: Fallback to dynamic calculation
+                            // This maintains compatibility but will be overwritten on next sale
+                            profitPerUnit = product.profitPerUnit || 0;
+                            totalProfit = (sale.quantity || 0) * profitPerUnit;
+                        }
+                        
+                        allSales.push({
+                            date: sale.date,
+                            productName: product.name,
+                            quantity: sale.quantity,
+                            profitPerUnit: profitPerUnit,
+                            totalProfit: totalProfit
+                        });
+
+                        overallTotalProfit += totalProfit;
+                    });
+                }
+            });
+            
+            // 2. Sort by date (newest first)
+            allSales.sort((a, b) => new Date(b.date) - new Date(a.date));
+            
+            // 3. Update total labels
+            const dateRangeLabel = (startDate || endDate) ? 'Filtered' : 'All Time';
+            profitTotalLabel.textContent = `Total Gross Profit (${dateRangeLabel}):`;
+
+
+            // 4. Render table
+            if (allSales.length === 0) {
+                const tr = document.createElement('tr');
+                if (startDate || endDate) {
+                    tr.innerHTML = `<td colspan="5" class="text-center p-6 text-gray-500">No sales found for this date range.</td>`;
+                } else {
+                    tr.innerHTML = `<td colspan="5" class="text-center p-6 text-gray-500">No sales logged yet.</td>`;
+                }
+                revenueTableBody.appendChild(tr);
+            } else {
+                allSales.forEach(sale => {
+                    const tr = document.createElement('tr');
+                    tr.className = 'hover:bg-gray-50';
+
+                    const saleDate = new Date(sale.date);
+                    const dateString = saleDate.toLocaleDateString('en-IN', {
+                        day: '2-digit',
+                        month: 'short',
+                        year: 'numeric',
+                        timeZone: 'UTC' // Fix off-by-one date issue
+                    });
+
+                    tr.innerHTML = `
+                        <td class="py-4 px-4 sm:px-6 text-sm text-gray-700">${dateString}</td>
+                        <td class="py-4 px-4 sm:px-6 text-sm text-gray-900 font-medium">${sale.productName}</td>
+                        <td class="py-4 px-4 sm:px-6 text-sm text-gray-700">${sale.quantity}</td>
+                        <td class="py-4 px-4 sm:px-6 text-sm text-gray-700">₹${sale.profitPerUnit.toFixed(2)}</td>
+                        <td class="py-4 px-4 sm:px-6 text-sm text-blue-700 font-semibold">₹${sale.totalProfit.toFixed(2)}</td>
+                    `;
+                    revenueTableBody.appendChild(tr);
+                });
+            }
+            
+            // 5. Update the total summary cards
+            profitTotalDisplay.textContent = `₹${overallTotalProfit.toFixed(2)}`;
+            
+            // 6. Render the new pie chart
+            renderRevenuePieChart(startDate, endDate);
+        }
+
+        // Render Revenue Pie Chart (Now Profit Pie Chart)
+        function renderRevenuePieChart(startDate, endDate) {
+            if (revenuePieChartInstance) {
+                revenuePieChartInstance.destroy();
+            }
+
+            const profitByProduct = products.map(product => {
+                const total = (product.salesHistory || [])
+                    .filter(sale => {
+                        if (startDate && sale.date < startDate) return false;
+                        if (endDate && sale.date > endDate) return false;
+                        return true;
+                    })
+                    .reduce((sum, sale) => {
+                        // NEW: Use saved profit if available, otherwise calculate
+                        const profit = typeof sale.totalProfit !== 'undefined'
+                            ? (sale.totalProfit || 0)
+                            : ((sale.quantity || 0) * (product.profitPerUnit || 0));
+                        return sum + profit;
+                    }, 0);
+                
+                return { name: product.name, total: total };
+            }).filter(p => p.total > 0); // Only show products with profit
+            
+            const ctx = revenuePieChartCanvas.getContext('2d');
+            if (profitByProduct.length === 0) {
+                ctx.clearRect(0, 0, revenuePieChartCanvas.width, revenuePieChartCanvas.height);
+                ctx.save();
+                ctx.textAlign = 'center';
+                ctx.fillStyle = '#9ca3af';
+                ctx.font = '16px Inter';
+                ctx.fillText('No profit data for any product in this range.', revenuePieChartCanvas.width / 2, revenuePieChartCanvas.height / 2);
+                ctx.restore();
+                return;
+            }
+
+            const labels = profitByProduct.map(p => p.name);
+            const data = profitByProduct.map(p => p.total);
+            
+             // Simple color generation
+             const colors = labels.map((_, i) => {
+                const hue = (i * 360 / labels.length) % 360;
+                return `hsl(${hue}, 70%, 60%)`;
+            });
+
+            revenuePieChartInstance = new Chart(ctx, {
+                type: 'pie',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'Total Profit',
+                        data: data,
+                        backgroundColor: colors,
+                        hoverOffset: 4
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            position: 'top',
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    const label = context.label || '';
+                                    const value = context.raw;
+                                    const total = context.chart.data.datasets[0].data.reduce((a, b) => a + b, 0);
+                                    const percentage = total > 0 ? (value / total * 100).toFixed(1) : 0;
+                                    return `${label}: ₹${value.toFixed(2)} (${percentage}%)`;
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    
+        // --- Expenses Page Logic (UPDATED for Firestore) ---
+    
+        function renderExpensesPage() {
+            expensesTableBody.innerHTML = ''; // Clear the table
+            let overallTotal = 0;
+
+            // Get filter dates
+            const startDate = expensesStartDate.value;
+            const endDate = expensesEndDate.value;
+            
+            // expenses array is already sorted by date from onSnapshot
+
+            let filteredExpenses = expenses.filter(expense => {
+                const expenseDate = expense.dateTime.split('T')[0];
+                
+                if (startDate && expenseDate < startDate) {
+                    return false;
+                }
+                if (endDate && expenseDate > endDate) {
+                    return false;
+                }
+                return true;
+            });
+            
+            // Update total label
+            if (startDate || endDate) {
+                expensesTotalLabel.textContent = 'Total Expenses (Filtered):';
+            } else {
+                expensesTotalLabel.textContent = 'Total Expenses (All Time):';
+            }
+
+            if (filteredExpenses.length === 0) {
+                const tr = document.createElement('tr');
+                tr.id = 'no-expenses-row';
+                if (startDate || endDate) {
+                    tr.innerHTML = `<td colspan="5" class="text-center p-6 text-gray-500">No expenses found for this date range.</td>`;
+                } else {
+                    tr.innerHTML = `<td colspan="5" class="text-center p-6 text-gray-500">No expenses logged yet.</td>`;
+                }
+                expensesTableBody.appendChild(tr);
+            } else {
+                // Iterate newest first (already sorted)
+                filteredExpenses.forEach(expense => {
+                    const tr = document.createElement('tr');
+                    tr.className = 'hover:bg-gray-50';
+
+                    // Format the date
+                    const expenseDate = new Date(expense.dateTime);
+                    const dateString = expenseDate.toLocaleDateString('en-IN', {
+                        day: '2-digit',
+                        month: 'short',
+                        year: 'numeric'
+                    });
+                    const timeString = expenseDate.toLocaleTimeString('en-IN', {
+                        hour: '2-digit',
+                        minute: '2-digit',
+                        hour12: true
+                    });
+
+                    tr.innerHTML = `
+                        <td class="py-4 px-4 sm:px-6 text-sm text-gray-700">
+                            <div>${dateString}</div>
+                            <div class="text-xs text-gray-500">${timeString}</div>
+                        </td>
+                        <td class="py-4 px-4 sm:px-6 text-sm text-gray-900 font-medium">${expense.productName}</td>
+                        <td class="py-4 px-4 sm:px-6 text-sm text-gray-700">${expense.quantity || 'N/A'}</td>
+                        <td class="py-4 px-4 sm:px-6 text-sm text-gray-900 font-semibold">₹${expense.price.toFixed(2)}</td>
+                        <td class="py-4 px-4 sm:px-6 text-sm">
+                            <button class="edit-expense-btn text-blue-600 hover:text-blue-800 font-medium" data-id="${expense.id}">Edit</button>
+                            <button class="delete-expense-btn text-red-600 hover:text-red-800 font-medium ml-3" data-id="${expense.id}">Delete</button>
+                        </td>
+                    `;
+                    expensesTableBody.appendChild(tr);
+
+                    overallTotal += expense.price;
+                });
+            }
+            
+            // Update the total summary card
+            expensesTotalDisplay.textContent = `₹${overallTotal.toFixed(2)}`;
+        }
+
+
+        async function handleExpenseFormSubmit(e) {
+            e.preventDefault();
+            if (!userId) return showToast('Not authenticated.', 'error');
+
+            const productName = expensesProductName.value;
+            const quantity = parseInt(expensesQuantity.value) || 0;
+            const totalPrice = parseFloat(expensesTotalPrice.value) || 0;
+
+            if (!productName) {
+                return showToast('Please enter a product or service name.', 'error');
+            }
+            if (totalPrice <= 0) {
+                return showToast('Please enter a valid total price.', 'error');
+            }
+
+            // Create new expense object
+            const newExpense = {
+                // id will be auto-generated by Firestore
+                dateTime: new Date().toISOString(), // Store as ISO string
+                productName: productName,
+                quantity: quantity > 0 ? quantity : null, // Store null if 0 or empty
+                price: totalPrice
+            };
+            
+            // --- Add to Firestore ---
+            const expensesCollectionPath = `/artifacts/${appId}/users/${userId}/expenses`;
+            try {
+                await addDoc(collection(db, expensesCollectionPath), newExpense);
+                // UI update is handled by onSnapshot
+                expensesForm.reset();
+                showToast('Expense logged successfully!', 'success');
+            } catch (error) {
+                console.error("Error logging expense:", error);
+                showToast('Error logging expense.', 'error');
+            }
+        }
+        
+        // --- Expense Table Button Listeners ---
+        function handleExpenseTableClick(e) {
+            const editBtn = e.target.closest('.edit-expense-btn');
+            const deleteBtn = e.target.closest('.delete-expense-btn');
+
+            if (editBtn) {
+                const id = editBtn.dataset.id;
+                openEditExpenseModal(id);
+            }
+
+            if (deleteBtn) {
+                const id = deleteBtn.dataset.id;
+                showConfirmationModal(
+                    'Are you sure you want to delete this expense?',
+                    () => deleteExpense(id)
+                );
+            }
+        }
+        
+        // --- Edit Expense Modal Logic (UPDATED for Firestore) ---
+        
+        function openEditExpenseModal(id) {
+            const expense = expenses.find(e => e.id === id);
+            if (!expense) return;
+            
+            currentEditExpenseId = id;
+            editExpenseForm.reset();
+            
+            // Populate form
+            editExpenseProductName.value = expense.productName;
+            editExpenseQuantity.value = expense.quantity || '';
+            editExpenseTotalPrice.value = expense.price;
+            
+            editExpenseModal.classList.remove('hidden');
+            editExpenseModal.classList.add('flex');
+        }
+        
+        function closeEditExpenseModal() {
+            currentEditExpenseId = null;
+            editExpenseForm.reset();
+            editExpenseModal.classList.add('hidden');
+            editExpenseModal.classList.remove('flex');
+        }
+        
+        async function handleEditExpenseSubmit(e) {
+            e.preventDefault();
+            if (!userId || !currentEditExpenseId) return showToast('Error: Not authenticated or no item selected.', 'error');
+
+            const productName = editExpenseProductName.value;
+            const quantity = parseInt(editExpenseQuantity.value) || 0;
+            const totalPrice = parseFloat(editExpenseTotalPrice.value) || 0;
+
+            if (!productName) {
+                return showToast('Please enter a product or service name.', 'error');
+            }
+            if (totalPrice <= 0) {
+                return showToast('Please enter a valid total price.', 'error');
+            }
+            
+            // --- Update Firestore ---
+            const expenseRef = doc(db, `/artifacts/${appId}/users/${userId}/expenses`, currentEditExpenseId);
+            try {
+                await updateDoc(expenseRef, {
+                    productName: productName,
+                    quantity: quantity > 0 ? quantity : null,
+                    price: totalPrice
+                });
+                
+                // UI update handled by onSnapshot
+                closeEditExpenseModal();
+                showToast('Expense updated successfully!', 'success');
+            } catch (error) {
+                console.error("Error updating expense:", error);
+                showToast('Error updating expense.', 'error');
+            }
+        }
+
+        // --- Delete Expense (UPDATED for Firestore) ---
+        async function deleteExpense(id) {
+            if (!userId) return showToast('Not authenticated.', 'error');
+            
+            const expenseRef = doc(db, `/artifacts/${appId}/users/${userId}/expenses`, id);
+            try {
+                await deleteDoc(expenseRef);
+                // UI update handled by onSnapshot
+                hideConfirmationModal();
+                showToast('Expense deleted successfully.', 'success');
+            } catch (error) {
+                console.error("Error deleting expense:", error);
+                hideConfirmationModal();
+                showToast('Error deleting expense.', 'error');
+            }
+        }
+
+        // --- Confirmation Modal Logic ---
+        
+        function showConfirmationModal(message, callback) {
+            confirmationMessage.textContent = message;
+            confirmCallback = callback; // Store the function to call on confirm
+            confirmationModal.classList.remove('hidden');
+            confirmationModal.classList.add('flex');
+        }
+        
+        function hideConfirmationModal() {
+            confirmCallback = null;
+            confirmationModal.classList.add('hidden');
+            confirmationModal.classList.remove('flex');
+        }
+        
+        function handleConfirmClick() {
+            if (typeof confirmCallback === 'function') {
+                confirmCallback();
+            }
+        }
+
+
+        // --- Analysis Page Logic (UPDATED) ---
+        function populateAnalysisDropdown() {
+            analysisProductSelect.innerHTML = ''; // Clear existing options
+            
+            if (products.length === 0) {
+                analysisProductSelect.innerHTML = '<option disabled selected>No products available</option>';
+            } else {
+                products.forEach(product => {
+                    const option = document.createElement('option');
+                    option.value = product.sku;
+                    option.textContent = `${product.name} (SKU: ${product.sku})`;
+                    analysisProductSelect.appendChild(option);
+                });
+            }
+        }
+
+        function updateAnalysis() {
+            const selectedSku = analysisProductSelect.value;
+            const startDate = analysisStartDate.value;
+            const endDate = analysisEndDate.value;
+            
+            const product = products.find(p => p.sku === selectedSku);
+
+            let filteredHistory = [];
+            if (product && Array.isArray(product.salesHistory)) {
+                filteredHistory = product.salesHistory.filter(entry => {
+                    if (startDate && entry.date < startDate) return false;
+                    if (endDate && entry.date > endDate) return false;
+                    return true;
+                });
+            }
+            
+            renderSalesChart(product, filteredHistory);
+            renderSalesPieChart(startDate, endDate); // NEW
+            updateAnalysisSummary(filteredHistory);
+        }
+
+        function updateAnalysisSummary(filteredHistory) {
+            const total = filteredHistory.reduce((sum, entry) => sum + entry.quantity, 0);
+            analysisTotalSold.textContent = `${total} units`;
+        }
+
+
+        function renderSalesChart(product, filteredHistory) {
+            if (salesChartInstance) {
+                salesChartInstance.destroy();
+            }
+
+            const ctx = salesChartCanvas.getContext('2d');
+            if (!product || filteredHistory.length === 0) {
+                ctx.clearRect(0, 0, salesChartCanvas.width, salesChartCanvas.height);
+                ctx.save();
+                ctx.textAlign = 'center';
+                ctx.fillStyle = '#9ca3af'; // gray-400
+                ctx.font = '16px Inter';
+                if (!product) {
+                    ctx.fillText('Please select a product.', salesChartCanvas.width / 2, salesChartCanvas.height / 2);
+                } else {
+                    ctx.fillText('No sales data to display for this date range.', salesChartCanvas.width / 2, salesChartCanvas.height / 2);
+                }
+                ctx.restore();
+                return;
+            }
+            
+            const sortedHistory = [...filteredHistory].sort((a, b) => new Date(a.date) - new Date(b.date));
+            const labels = sortedHistory.map(entry => entry.date);
+            const data = sortedHistory.map(entry => entry.quantity);
+
+            salesChartInstance = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'Daily Sales',
+                        data: data,
+                        borderColor: 'rgb(59, 130, 246)', // blue-500
+                        backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                        borderWidth: 2,
+                        fill: true,
+                        tension: 0.1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            title: {
+                                display: true,
+                                text: 'Units Sold'
+                            }
+                        },
+                        x: {
+                            title: {
+                                display: true,
+                                text: 'Date'
+                            }
+                        }
+                    },
+                    plugins: {
+                        legend: {
+                            display: false
+                        },
+                        tooltip: {
+                            mode: 'index',
+                            intersect: false,
+                        },
+                        title: {
+                            display: true,
+                            text: `Sales History for ${product.name}`,
+                            font: {
+                                size: 18
+                            }
+                        }
+                    }
+                }
+            });
+        }
+        
+        // NEW: Render Pie Chart
+        function renderSalesPieChart(startDate, endDate) {
+            if (salesPieChartInstance) {
+                salesPieChartInstance.destroy();
+            }
+
+            const salesByProduct = products.map(product => {
+                const total = (product.salesHistory || [])
+                    .filter(sale => {
+                        if (startDate && sale.date < startDate) return false;
+                        if (endDate && sale.date > endDate) return false;
+                        return true;
+                    })
+                    .reduce((sum, sale) => {
+                        // NEW: Use saved profit if available, otherwise calculate
+                        const profit = typeof sale.totalProfit !== 'undefined'
+                            ? (sale.totalProfit || 0)
+                            : ((sale.quantity || 0) * (product.profitPerUnit || 0));
+                        
+                        // This pie chart is for QUANTITY, not profit. Let's fix that.
+                        // The original logic was correct, this pie chart is for sales.
+                        return sum + (sale.quantity || 0);
+                    }, 0);
+                
+                return { name: product.name, total: total };
+            }).filter(p => p.total > 0); // Only show products with sales
+            
+            const ctx = salesPieChartCanvas.getContext('2d');
+            if (salesByProduct.length === 0) {
+                ctx.clearRect(0, 0, salesPieChartCanvas.width, salesPieChartCanvas.height);
+                ctx.save();
+                ctx.textAlign = 'center';
+                ctx.fillStyle = '#9ca3af';
+                ctx.font = '16px Inter';
+                ctx.fillText('No sales data for any product in this range.', salesPieChartCanvas.width / 2, salesPieChartCanvas.height / 2);
+                ctx.restore();
+                return;
+            }
+
+            const labels = salesByProduct.map(p => p.name);
+            const data = salesByProduct.map(p => p.total);
+            
+             // Simple color generation
+             const colors = labels.map((_, i) => {
+                const hue = (i * 360 / labels.length) % 360;
+                return `hsl(${hue}, 70%, 60%)`;
+            });
+
+            salesPieChartInstance = new Chart(ctx, {
+                type: 'pie',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'Units Sold',
+                        data: data,
+                        backgroundColor: colors,
+                        hoverOffset: 4
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            position: 'top',
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    const label = context.label || '';
+                                    const value = context.raw;
+                                    const total = context.chart.data.datasets[0].data.reduce((a, b) => a + b, 0);
+                                    const percentage = total > 0 ? (value / total * 100).toFixed(1) : 0;
+                                    return `${label}: ${value} units (${percentage}%)`;
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+
+        // --- Toast Notification Utility ---
+        function showToast(message, type = 'success') {
+            if (!toast) return; // Guard against toast not existing
+            toast.textContent = message;
+            toast.classList.remove('bg-green-600', 'bg-red-600');
+            
+            if (type === 'error') {
+                toast.classList.add('bg-red-600', 'text-white');
+            } else {
+                toast.classList.add('bg-green-600', 'text-white');
+            }
+            
+            toast.classList.add('show');
+            setTimeout(() => {
+                toast.classList.remove('show');
+            }, 3000); // Hide after 3 seconds
+        }
+
+        // --- Calculator Page Logic ---
+        function calculateShipping(weight_g) {
+            if (weight_g <= 0) return 0.00;
+            if (weight_g <= 500) return 76.70;
+            if (weight_g <= 1000) return 100.30;
+            if (weight_g <= 2000) return 143.96;
+            if (weight_g <= 3000) return 184.08;
+            if (weight_g <= 4000) return 224.20;
+            if (weight_g <= 5000) return 264.32;
+            if (weight_g <= 6000) return 285.56;
+            if (weight_g <= 7000) return 306.80;
+            if (weight_g <= 8000) return 328.04;
+            if (weight_g <= 9000) return 349.28;
+            if (weight_g <= 10000) return 370.52;
+            return 370.52; 
+        }
+
+        function handleWeightInput() {
+            const weight = parseFloat(productWeightEl.value) || 0;
+            const shipping = calculateShipping(weight);
+            shippingCostEl.value = shipping.toFixed(2);
+        }
+
+        function handleCalculatorSubmit(event) {
+            event.preventDefault();
+            const sellingPriceEl = document.getElementById('selling-price');
+            const productCostEl = document.getElementById('product-cost');
+            const packagingCostEl = document.getElementById('packaging-cost');
+            const amazonFeesEl = document.getElementById('amazon-fees');
+            const gstPercentageEl = document.getElementById('gst-percentage');
+            const otherCostsEl = document.getElementById('other-costs');
+            const resultsContainer = document.getElementById('results-container');
+            const totalCostEl = document.getElementById('total-cost');
+            const netProfitBeforeTaxEl = document.getElementById('net-profit-before-tax');
+            const profitMarginEl = document.getElementById('profit-margin');
+            const taxAmountEl = document.getElementById('tax-amount');
+            const netProfitAfterTaxEl = document.getElementById('net-profit-after-tax');
+            const roiEl = document.getElementById('roi');
+
+            // 1. Get Values
+            const sellingPrice = parseFloat(sellingPriceEl.value) || 0;
+            const productCost = parseFloat(productCostEl.value) || 0;
+            const shippingCost = parseFloat(shippingCostEl.value) || 0;
+            const packagingCost = parseFloat(packagingCostEl.value) || 0;
+            const amazonFees = parseFloat(amazonFeesEl.value) || 0;
+            const gstPercentage = parseFloat(gstPercentageEl.value) || 0;
+            const otherCosts = parseFloat(otherCostsEl.value) || 0;
+            // 2. Perform Calculations
+            const totalCost = productCost + shippingCost + packagingCost + amazonFees + otherCosts;
+            const netProfitBeforeTax = sellingPrice - totalCost;
+            const profitMargin = sellingPrice > 0 ? (netProfitBeforeTax / sellingPrice) * 100 : 0;
+            const taxAmount = (sellingPrice * gstPercentage) / 100;
+            const netProfitAfterTax = netProfitBeforeTax - taxAmount;
+            const roi = productCost > 0 ? (netProfitAfterTax / productCost) * 100 : 0;
+            // 3. Display Results
+            totalCostEl.textContent = `₹${totalCost.toFixed(2)}`;
+            netProfitBeforeTaxEl.textContent = `₹${netProfitBeforeTax.toFixed(2)}`;
+            profitMarginEl.textContent = `${profitMargin.toFixed(2)}%`;
+            taxAmountEl.textContent = `₹${taxAmount.toFixed(2)}`;
+            netProfitAfterTaxEl.textContent = `₹${netProfitAfterTax.toFixed(2)}`;
+            roiEl.textContent = `${roi.toFixed(2)}%`;
+            // 4. Style Results
+            netProfitAfterTaxEl.parentElement.classList.remove('bg-green-50', 'bg-red-50', 'bg-gray-50');
+            netProfitAfterTaxEl.classList.remove('text-green-700', 'text-red-700', 'text-gray-800');
+            if (netProfitAfterTax > 0) {
+                netProfitAfterTaxEl.parentElement.classList.add('bg-green-50');
+                netProfitAfterTaxEl.classList.add('text-green-700');
+            } else if (netProfitAfterTax < 0) {
+                netProfitAfterTaxEl.parentElement.classList.add('bg-red-50');
+                netProfitAfterTaxEl.classList.add('text-red-700');
+            } else {
+                netProfitAfterTaxEl.parentElement.classList.add('bg-gray-50');
+                netProfitAfterTaxEl.classList.add('text-gray-800');
+            }
+            resultsContainer.classList.remove('hidden');
+        }
+
+        // --- Initial App Load ---
+        function startApp() {
+            // First, initialize Firebase
+            initializeFirebase();
+            
+            // --- Attach all event listeners ---
+            
+            // Sidebar
+            menuToggle.addEventListener('click', toggleSidebar);
+            sidebarOverlay.addEventListener('click', toggleSidebar);
+
+            // Page Navigation
+            navCalculator.addEventListener('click', (e) => { e.preventDefault(); setActivePage('calculator'); });
+            navDashboard.addEventListener('click', (e) => { e.preventDefault(); setActivePage('dashboard'); });
+            navInventory.addEventListener('click', (e) => { e.preventDefault(); setActivePage('inventory'); });
+            navRevenue.addEventListener('click', (e) => { e.preventDefault(); setActivePage('revenue'); }); 
+            navExpenses.addEventListener('click', (e) => { e.preventDefault(); setActivePage('expenses'); }); 
+            navAnalysis.addEventListener('click', (e) => { e.preventDefault(); setActivePage('analysis'); });
+            // NEW: Lock Listeners
+            navLock.addEventListener('click', (e) => { e.preventDefault(); toggleAppLock(); });
+            pinForm.addEventListener('submit', handlePinSubmit);
+            pinCancelBtn.addEventListener('click', closePinModal);
+            
+            // Product Modal
+            addProductBtn.addEventListener('click', openAddProductModal);
+            modalCancelBtn.addEventListener('click', closeProductModal);
+            productModal.addEventListener('click', (e) => { if (e.target === productModal) closeProductModal(); });
+            productForm.addEventListener('submit', handleProductFormSubmit);
+            
+            // Dashboard Grid
+            productGrid.addEventListener('click', handleDashboardClick);
+            
+            // Inventory Page
+            inventoryForm.addEventListener('submit', handleInventorySubmit);
+            
+            // Revenue (Profit) Page
+            revenueFilterBtn.addEventListener('click', renderRevenuePage);
+            revenueClearFilterBtn.addEventListener('click', () => {
+                revenueStartDate.value = '';
+                revenueEndDate.value = '';
+                renderRevenuePage();
+            });
+            profitSetForm.addEventListener('submit', handleProfitSetSubmit);
+            profitProductSelect.addEventListener('change', handleProfitProductSelect);
+
+            // Expenses Page
+            expensesFilterBtn.addEventListener('click', renderExpensesPage);
+            expensesClearFilterBtn.addEventListener('click', () => {
+                expensesStartDate.value = '';
+                expensesEndDate.value = '';
+                renderExpensesPage();
+            });
+            expensesForm.addEventListener('submit', handleExpenseFormSubmit);
+            expensesTableBody.addEventListener('click', handleExpenseTableClick);
+            
+            // Edit Expense Modal
+            editExpenseCancelBtn.addEventListener('click', closeEditExpenseModal);
+            editExpenseModal.addEventListener('click', (e) => { if (e.target === editExpenseModal) closeEditExpenseModal(); });
+            editExpenseForm.addEventListener('submit', handleEditExpenseSubmit);
+            
+            // Confirmation Modal
+            confirmationCancelBtn.addEventListener('click', hideConfirmationModal);
+            confirmationModal.addEventListener('click', (e) => { if (e.target === confirmationModal) hideConfirmationModal(); });
+            confirmationConfirmBtn.addEventListener('click', handleConfirmClick);
+
+            // Analysis Page
+            analysisProductSelect.addEventListener('change', updateAnalysis);
+            analysisFilterBtn.addEventListener('click', updateAnalysis);
+            
+            // Calculator Page
+            productWeightEl.addEventListener('input', handleWeightInput);
+            calculatorForm.addEventListener('submit', handleCalculatorSubmit);
+
+            // Set the default page to the unlocked one
+            setActivePage('dashboard');
+            // NEW: Set initial lock icon state
+            updateLockIcons();
+        }
+
+    </script>
+    
+    <!-- Configure Tailwind to use Inter font -->
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                    },
+                },
+            },
+        };
+    </script>
+    <style>
+        /* Simple style for number inputs */
+        input[type="number"] {
+            -moz-appearance: textfield;
+        }
+        input[type="number"]::-webkit-outer-spin-button,
+        input[type="number"]::-webkit-inner-spin-button {
+            -webkit-appearance: none;
+            margin: 0;
+        }
+        /* Simple toast notification style */
+        #toast {
+            position: fixed;
+            bottom: -100px;
+            left: 50%;
+            transform: translateX(-50%);
+            padding: 12px 24px;
+            border-radius: 8px;
+            font-weight: 500;
+            transition: bottom 0.5s ease-in-out;
+            z-index: 50;
+        }
+        #toast.show {
+            bottom: 30px;
+        }
+        /* Make modal backdrop visible */
+        .modal-backdrop {
+            background-color: rgba(0, 0, 0, 0.5);
+        }
+    </style>
+</head>
+<body class="bg-gray-100 font-sans">
+    <div class="relative min-h-screen md:flex">
+        <!-- Mobile Menu Overlay -->
+        <div id="sidebar-overlay" class="fixed inset-0 bg-black bg-opacity-50 z-10 hidden md:hidden"></div>
+
+        <!-- Sidebar -->
+        <aside id="sidebar" class="w-64 bg-gray-800 text-white p-6 fixed inset-y-0 left-0 h-full shadow-lg transform -translate-x-full md:translate-x-0 transition-transform duration-300 ease-in-out z-20">
+            <h1 class="text-2xl font-bold mb-8">My Dashboard</h1>
+            <nav>
+                <!-- Navigation Links -->
+                <a href="#" id="nav-calculator" class="flex items-center justify-between py-2.5 px-4 rounded-lg hover:bg-gray-700 transition duration-200 mb-2">
+                    <span class="flex items-center">
+                        <svg class="w-5 h-5 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 8v8m-4-5v5m-4-2v2m-2 4h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+                        Profit Calculator
+                    </span>
+                    <svg id="lock-icon-calculator" class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
+                </a>
+                <a href="#" id="nav-dashboard" class="flex items-center py-2.5 px-4 rounded-lg bg-blue-600 text-white mb-2">
+                    <span class="flex items-center">
+                        <svg class="w-5 h-5 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6-4h.01M12 12h.01M15 12h.01M12 15h.01M15 15h.01M9 15h.01"></path></svg>
+                        Active Products
+                    </span>
+                </a>
+                <a href="#" id="nav-inventory" class="flex items-center justify-between py-2.5 px-4 rounded-lg hover:bg-gray-700 transition duration-200 mb-2">
+                    <span class="flex items-center">
+                        <svg class="w-5 h-5 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 4H6a2 2 0 00-2 2v12a2 2 0 002 2h12a2 2 0 002-2V6a2 2 0 00-2-2h-2m-4-1v4m0 0H8m4 0h4m-4 8v4m0 0H8m4 0h4m-4-8v4m0 0H8m4 0h4"></path></svg>
+                        Inventory
+                    </span>
+                    <svg id="lock-icon-inventory" class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
+                </a>
+                <a href="#" id="nav-revenue" class="flex items-center justify-between py-2.5 px-4 rounded-lg hover:bg-gray-700 transition duration-200 mb-2">
+                    <span class="flex items-center">
+                        <svg class="w-5 h-5 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0-8c-1.11 0-2.08.402-2.599 1M12 16v-1m0 1v1m0-1c-1.11 0-2.08-.402-2.599-1M9.401 15c-.519-.598-1.401-1-2.599-1m0 0c-1.657 0-3-.895-3-2s1.343-2 3-2 3 .895 3 2-1.343 2-3 2m2.599-3c.519.598 1.401 1 2.599 1m0 0c1.657 0 3 .895 3 2s-1.343 2-3 2-3-.895-3-2 1.343-2 3-2m-2.599 3c-.519-.598-1.401-1-2.599-1"></path></svg>
+                        Profit
+                    </span>
+                    <svg id="lock-icon-revenue" class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
+                </a>
+                <a href="#" id="nav-expenses" class="flex items-center justify-between py-2.5 px-4 rounded-lg hover:bg-gray-700 transition duration-200 mb-2">
+                    <span class="flex items-center">
+                        <svg class="w-5 h-5 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 8h6m-5 0a3 3 0 110 6H9l-1.612-5.642A3 3 0 019 8zm0 6h6m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                        Expenses
+                    </span>
+                    <svg id="lock-icon-expenses" class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
+                </a>
+                <a href="#" id="nav-analysis" class="flex items-center justify-between py-2.5 px-4 rounded-lg hover:bg-gray-700 transition duration-200">
+                    <span class="flex items-center">
+                        <svg class="w-5 h-5 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 3.055A9.001 9.001 0 1020.945 13H11V3.055z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.488 9H15V3.512A9.025 9.025 0 0120.488 9z"></path></svg>
+                        Analysis
+                    </span>
+                    <svg id="lock-icon-analysis" class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
+                </a>
+            </nav>
+            <!-- NEW: Lock Button -->
+            <div class="mt-auto pt-6 border-t border-gray-700">
+                 <a href="#" id="nav-lock" class="flex items-center py-2.5 px-4 rounded-lg bg-red-600 text-white hover:bg-red-700 transition duration-200">
+                    <svg id="lock-button-icon" class="w-5 h-5 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
+                    <svg id="unlock-button-icon" class="w-5 h-5 mr-3 hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8zM15 9V7a4 4 0 00-4-4S9 3 9 7v2h6z"></path><path d="M15 9V7a4 4 0 00-4-4S9 3 9 7v2h6z"></path><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
+                    <span id="lock-button-text">Lock Dashboard</span>
+                </a>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="flex-1 md:ml-64 p-6 md:p-12 overflow-auto">
+            <!-- Mobile Header -->
+            <header class="md:hidden flex justify-between items-center mb-6">
+                <h2 id="mobile-header-title" class="text-2xl font-bold text-gray-800">Profit Calculator</h2>
+                <button id="menu-toggle" class="p-2 rounded-md text-gray-600 hover:bg-gray-200">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"></path></svg>
+                </button>
+            </header>
+
+            <!-- NEW: User ID Display -->
+            <div class="mb-4 p-3 bg-white rounded-lg shadow-sm text-center">
+                <span id="user-id-display" class="text-sm text-gray-600 font-mono" title="This is your unique User ID for this app.">Authenticating...</span>
+            </div>
+
+            <!-- ======================= -->
+            <!-- Profit Calculator Page  -->
+            <!-- ======================= -->
+            <div id="page-calculator">
+                <!-- Desktop Header -->
+                <h2 class="hidden md:block text-3xl font-bold text-gray-800 mb-8">Amazon Profit Calculator</h2>
+                
+                <!-- Calculator Card -->
+                <div class="bg-white p-6 md:p-8 rounded-xl shadow-lg max-w-2xl mx-auto">
+                    <form id="profit-form">
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                            <div class="md:col-span-2">
+                                <label for="selling-price" class="block text-sm font-medium text-gray-700 mb-1">Selling Price</label>
+                                <div class="relative">
+                                    <span class="absolute inset-y-0 left-0 pl-3 flex items-center text-gray-500">₹</span>
+                                    <input type="number" id="selling-price" placeholder="499.00" class="w-full pl-7 pr-3 py-3 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent" required step="0.01">
+                                </div>
+                            </div>
+
+                            <!-- Costs Section -->
+                            <div>
+                                <label for="product-cost" class="block text-sm font-medium text-gray-700 mb-1">Product Cost</label>
+                                <div class="relative">
+                                    <span class="absolute inset-y-0 left-0 pl-3 flex items-center text-gray-500">₹</span>
+                                    <input type="number" id="product-cost" placeholder="150.00" class="w-full pl-7 pr-3 py-3 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent" step="0.01">
+                                </div>
+                            </div>
+                            
+                            <div>
+                                <label for="product-weight" class="block text-sm font-medium text-gray-700 mb-1">Product Weight (grams)</label>
+                                <div class="relative">
+                                    <span class="absolute inset-y-0 right-0 pr-3 flex items-center text-gray-500">g</span>
+                                    <input type="number" id="product-weight" placeholder="e.g., 450" class="w-full pr-8 pl-3 py-3 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                                </div>
+                            </div>
+
+                            <div>
+                                <label for="shipping-cost" class="block text-sm font-medium text-gray-700 mb-1">Shipping Cost</label>
+                                <div class="relative">
+                                    <span class="absolute inset-y-0 left-0 pl-3 flex items-center text-gray-500">₹</span>
+                                    <input type="number" id="shipping-cost" placeholder="Calculated from weight" class="w-full pl-7 pr-3 py-3 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-gray-300 focus:border-transparent bg-gray-100" readonly>
+                                </div>
+                            </div>
+
+                            <div>
+                                <label for="packaging-cost" class="block text-sm font-medium text-gray-700 mb-1">Packaging Cost</label>
+                                <div class="relative">
+                                    <span class="absolute inset-y-0 left-0 pl-3 flex items-center text-gray-500">₹</span>
+                                    <input type="number" id="packaging-cost" placeholder="10.00" class="w-full pl-7 pr-3 py-3 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent" step="0.01">
+                                </div>
+                            </div>
+
+                            <div>
+                                <label for="amazon-fees" class="block text-sm font-medium text-gray-700 mb-1">Amazon Fees</label>
+                                <div class="relative">
+                                    <span class="absolute inset-y-0 left-0 pl-3 flex items-center text-gray-500">₹</span>
+                                    <input type="number" id="amazon-fees" placeholder="75.00" class="w-full pl-7 pr-3 py-3 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent" step="0.01">
+                                </div>
+                            </div>
+
+                            <div>
+                                <label for="gst-percentage" class="block text-sm font-medium text-gray-700 mb-1">GST (%)</label>
+                                <div class="relative">
+                                    <span class="absolute inset-y-0 right-0 pr-3 flex items-center text-gray-500">%</span>
+                                    <input type="number" id="gst-percentage" placeholder="18" class="w-full pr-7 pl-3 py-3 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent" step="1">
+                                </div>
+                            </div>
+
+                            <div class="md:col-span-2">
+                                <label for="other-costs" class="block text-sm font-medium text-gray-700 mb-1">Other Costs (Ads, etc)</label>
+                                <div class="relative">
+                                    <span class="absolute inset-y-0 left-0 pl-3 flex items-center text-gray-500">₹</span>
+                                    <input type="number" id="other-costs" placeholder="20.00" class="w-full pl-7 pr-3 py-3 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent" step="0.01">
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Calculate Button -->
+                        <div class="mt-8">
+                            <button type="submit" class="w-full bg-blue-600 text-white py-3 px-6 rounded-lg font-semibold text-lg hover:bg-blue-700 transition duration-200 shadow-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-50">
+                                Calculate Profit
+                            </button>
+                        </div>
+                    </form>
+
+                    <!-- Results Section -->
+                    <div id="results-container" class="mt-8 pt-6 border-t border-gray-200 hidden">
+                        <h3 class="text-xl font-semibold text-gray-800 mb-4">Calculation Results</h3>
+                        <div class="space-y-4">
+                            <div class="flex justify-between items-center bg-gray-50 p-4 rounded-lg">
+                                <span class="text-lg font-medium text-gray-600">Total Cost:</span>
+                                <span id="total-cost" class="text-lg font-bold text-gray-800">₹0.00</span>
+                            </div>
+                            <div class="flex justify-between items-center bg-blue-50 p-4 rounded-lg">
+                                <span class="text-lg font-medium text-blue-700">Profit Margin (Before Tax):</span>
+                                <span id="profit-margin" class="text-lg font-bold text-blue-700">0.00%</span>
+                            </div>
+                            <div class="flex justify-between items-center bg-gray-50 p-4 rounded-lg">
+                                <span class="text-lg font-medium text-gray-600">Profit Before Tax:</span>
+                                <span id="net-profit-before-tax" class="text-lg font-bold text-gray-800">₹0.00</span>
+                            </div>
+                            <div class="flex justify-between items-center bg-red-50 p-4 rounded-lg">
+                                <span class="text-lg font-medium text-red-700">Tax Amount (GST):</span>
+                                <span id="tax-amount" class="text-lg font-bold text-red-700">₹0.00</span>
+                            </div>
+                            <div class="flex justify-between items-center bg-green-50 p-4 rounded-lg">
+                                <span class="text-lg font-medium text-green-700">Net Profit (After Tax):</span>
+                                <span id="net-profit-after-tax" class="text-2xl font-bold text-green-700">₹0.00</span>
+                            </div>
+                            <div class="flex justify-between items-center bg-blue-50 p-4 rounded-lg">
+                                <span class="text-lg font-medium text-blue-700">Return on Investment (ROI):</span>
+                                <span id="roi" class="text-2xl font-bold text-blue-700">0.00%</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ======================= -->
+            <!-- Dashboard Page          -->
+            <!-- ======================= -->
+            <div id="page-dashboard" class="hidden">
+                <!-- Desktop Header & Add Product Button -->
+                <div class="flex flex-col md:flex-row justify-between items-center mb-8">
+                    <h2 class="hidden md:block text-3xl font-bold text-gray-800">Active Products</h2>
+                    <button id="add-product-btn" class="w-full md:w-auto bg-blue-600 text-white py-2 px-5 rounded-lg font-semibold hover:bg-blue-700 transition duration-200 shadow-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-50 mt-4 md:mt-0">
+                        + Add New Product
+                    </button>
+                </div>
+                
+                <!-- Product Cards Grid -->
+                <div id="product-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                    <!-- Product cards will be inserted here by renderDashboard() -->
+                    <p id="no-products-message" class="text-gray-500 hidden col-span-full">Loading products...</p>
+                </div>
+            </div>
+
+            <!-- ============================= -->
+            <!-- Inventory Management Page     -->
+            <!-- ============================= -->
+            <div id="page-inventory" class="hidden">
+                <!-- Desktop Header -->
+                <div class="mb-8">
+                    <h2 class="hidden md:block text-3xl font-bold text-gray-800">Inventory Management</h2>
+                </div>
+
+                <!-- Inventory Update Card -->
+                <div class="bg-white p-6 md:p-8 rounded-xl shadow-lg max-w-lg mx-auto">
+                    <h3 class="text-xl font-semibold text-gray-800 mb-6">Update Daily Stock</h3>
+                    <form id="inventory-form">
+                        <div class="space-y-6">
+                            <div>
+                                <label for="inventory-product-select" class="block text-sm font-medium text-gray-700 mb-1">Select Product</label>
+                                <select id="inventory-product-select" class="w-full px-3 py-3 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white" required>
+                                    <!-- Product options will be inserted here by populateInventoryDropdown() -->
+                                </select>
+                            </div>
+                            <div>
+                                <label for="inventory-daily-orders" class="block text-sm font-medium text-gray-700 mb-1">Daily Orders Placed</label>
+                                <input type="number" id="inventory-daily-orders" placeholder="e.g., 15" class="w-full px-3 py-3 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent" required min="0">
+                            </div>
+                        </div>
+                        <!-- Update Button -->
+                        <div class="mt-8">
+                            <button type="submit" class="w-full bg-blue-600 text-white py-3 px-6 rounded-lg font-semibold text-lg hover:bg-blue-700 transition duration-200 shadow-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-50">
+                                Update Stock
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+
+            <!-- ============================= -->
+            <!-- Revenue Page (Profit)         -->
+            <!-- ============================= -->
+            <div id="page-revenue" class="hidden">
+                <h2 class="hidden md:block text-3xl font-bold text-gray-800 mb-8">Profit Tracking</h2>
+                
+                <!-- Set Product Profits Card -->
+                <div class="bg-white p-6 md:p-8 rounded-xl shadow-lg max-w-lg mx-auto mb-8">
+                    <h3 class="text-xl font-semibold text-gray-800 mb-6">Set Product Profits</h3>
+                    <form id="profit-set-form">
+                        <div class="space-y-6">
+                            <div>
+                                <label for="profit-product-select" class="block text-sm font-medium text-gray-700 mb-1">Select Product</label>
+                                <select id="profit-product-select" class="w-full px-3 py-3 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white" required>
+                                    <!-- Product options will be inserted here by populateProfitSetDropdown() -->
+                                </select>
+                            </div>
+                            <div>
+                                <label for="profit-per-unit-input" class="block text-sm font-medium text-gray-700 mb-1">Profit Per Unit</label>
+                                <div class="relative">
+                                    <span class="absolute inset-y-0 left-0 pl-3 flex items-center text-gray-500">₹</span>
+                                    <input type="number" id="profit-per-unit-input" placeholder="25.00" class="w-full pl-7 pr-3 py-3 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent" required min="0" step="0.01">
+                                </div>
+                            </div>
+                        </div>
+                        <!-- Save Profit Button -->
+                        <div class="mt-8">
+                            <button type="submit" class="w-full bg-blue-600 text-white py-3 px-6 rounded-lg font-semibold text-lg hover:bg-blue-700 transition duration-200 shadow-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-50">
+                                Save Profit
+                            </button>
+                        </div>
+                    </form>
+                </div>
+
+
+                <!-- Filter controls -->
+                <div class="bg-white p-6 rounded-xl shadow-lg w-full mx-auto mb-6">
+                    <div class="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
+                        <div>
+                            <label for="revenue-start-date" class="block text-sm font-medium text-gray-700 mb-1">Start Date</label>
+                            <input type="date" id="revenue-start-date" class="w-full px-3 py-3 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                        </div>
+                        <div>
+                            <label for="revenue-end-date" class="block text-sm font-medium text-gray-700 mb-1">End Date</label>
+                            <input type="date" id="revenue-end-date" class="w-full px-3 py-3 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                        </div>
+                        <button id="revenue-filter-btn" class="w-full bg-blue-600 text-white py-3 px-6 rounded-lg font-semibold text-lg hover:bg-blue-700 transition duration-200 shadow-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-50">
+                            Apply Filter
+                        </button>
+                        <button id="revenue-clear-filter-btn" class="w-full bg-gray-200 text-gray-700 py-3 px-6 rounded-lg font-semibold text-lg hover:bg-gray-300 transition duration-200 focus:outline-none focus:ring-2 focus:ring-gray-400 focus:ring-opacity-50">
+                            Clear Filter
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Total Profit Summary Card -->
+                <div class="bg-white p-6 rounded-xl shadow-lg w-full max-w-md mx-auto md:max-w-none mb-6">
+                    <div class="flex justify-between items-center">
+                        <span id="profit-total-label" class="text-lg font-medium text-gray-600">Total Gross Profit (All Time):</span>
+                        <span id="profit-total-display" class="text-3xl font-bold text-blue-600">₹0.00</span>
+                    </div>
+                </div>
+
+                <!-- Profit History Table -->
+                <h3 class="text-xl font-semibold text-gray-800 mb-4">Profit History</h3>
+                <div class="w-full bg-white shadow-md rounded-xl overflow-auto">
+                    <table class="w-full">
+                        <thead class="bg-gray-50">
+                            <tr>
+                                <th class="text-left py-3 px-4 sm:px-6 text-sm font-semibold text-gray-600 uppercase">Date</th>
+                                <th class="text-left py-3 px-4 sm:px-6 text-sm font-semibold text-gray-600 uppercase">Product</th>
+                                <th class="text-left py-3 px-4 sm:px-6 text-sm font-semibold text-gray-600 uppercase">Qty Sold</th>
+                                <th class="text-left py-3 px-4 sm:px-6 text-sm font-semibold text-gray-600 uppercase">Profit (per unit)</th>
+                                <th class="text-left py-3 px-4 sm:px-6 text-sm font-semibold text-gray-600 uppercase">Total Profit</th>
+                            </tr>
+                        </thead>
+                        <tbody id="revenue-table-body" class="divide-y divide-gray-200">
+                            <!-- Rows will be injected here by renderRevenuePage() -->
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- Profit Pie Chart Container -->
+                <div class="bg-white p-6 md:p-8 rounded-xl shadow-lg w-full mx-auto mt-6">
+                    <h3 class="text-xl font-semibold text-gray-800 mb-4 text-center">Profit Contribution (in range)</h3>
+                    <div class="relative h-64 md:h-96">
+                        <canvas id="revenue-pie-chart"></canvas>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ============================= -->
+            <!-- Expenses Page                 -->
+            <!-- ============================= -->
+            <div id="page-expenses" class="hidden">
+                <h2 class="hidden md:block text-3xl font-bold text-gray-800 mb-8">Expenses</h2>
+
+                <!-- Filter controls -->
+                <div class="bg-white p-6 rounded-xl shadow-lg w-full mx-auto mb-6">
+                    <div class="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
+                        <div>
+                            <label for="expenses-start-date" class="block text-sm font-medium text-gray-700 mb-1">Start Date</label>
+                            <input type="date" id="expenses-start-date" class="w-full px-3 py-3 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                        </div>
+                        <div>
+                            <label for="expenses-end-date" class="block text-sm font-medium text-gray-700 mb-1">End Date</label>
+                            <input type="date" id="expenses-end-date" class="w-full px-3 py-3 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                        </div>
+                        <button id="expenses-filter-btn" class="w-full bg-blue-600 text-white py-3 px-6 rounded-lg font-semibold text-lg hover:bg-blue-700 transition duration-200 shadow-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-50">
+                            Apply Filter
+                        </button>
+                        <button id="expenses-clear-filter-btn" class="w-full bg-gray-200 text-gray-700 py-3 px-6 rounded-lg font-semibold text-lg hover:bg-gray-300 transition duration-200 focus:outline-none focus:ring-2 focus:ring-gray-400 focus:ring-opacity-50">
+                            Clear Filter
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Total Expenses Summary Card -->
+                <div class="bg-white p-6 rounded-xl shadow-lg w-full max-w-md mx-auto md:max-w-none mb-6">
+                    <div class="flex justify-between items-center">
+                        <span id="expenses-total-label" class="text-lg font-medium text-gray-600">Total Expenses (All Time):</span>
+                        <span id="expenses-total-display" class="text-3xl font-bold text-red-600">₹0.00</span>
+                    </div>
+                </div>
+
+                <!-- Add Expense Card -->
+                <div class="bg-white p-6 md:p-8 rounded-xl shadow-lg max-w-lg mx-auto mb-8">
+                    <h3 class="text-xl font-semibold text-gray-800 mb-6">Log a New Expense</h3>
+                    <form id="expenses-form">
+                        <div class="space-y-6">
+                            <div>
+                                <label for="expenses-product-name" class="block text-sm font-medium text-gray-700 mb-1">Product / Service Name</label>
+                                <input type="text" id="expenses-product-name" placeholder="e.g., Bubble Wrap, Tape, etc." class="w-full px-3 py-3 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent" required>
+                            </div>
+                            
+                            <div>
+                                <label for="expenses-quantity" class="block text-sm font-medium text-gray-700 mb-1">Quantity (optional)</label>
+                                <input type="number" id="expenses-quantity" placeholder="e.g., 50" class="w-full px-3 py-3 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent" min="0">
+                            </div>
+
+                            <div>
+                                <label for="expenses-total-price" class="block text-sm font-medium text-gray-700 mb-1">Total Purchase Price</label>
+                                <div class="relative">
+                                    <span class="absolute inset-y-0 left-0 pl-3 flex items-center text-gray-500">₹</span>
+                                    <input type="number" id="expenses-total-price" placeholder="500.00" class="w-full pl-7 pr-3 py-3 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent" required min="0" step="0.01">
+                                </div>
+                            </div>
+
+                        </div>
+                        <!-- Add Purchase Button -->
+                        <div class="mt-8">
+                            <button type="submit" class="w-full bg-blue-600 text-white py-3 px-6 rounded-lg font-semibold text-lg hover:bg-blue-700 transition duration-200 shadow-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-50">
+                                Log Expense
+                            </button>
+                        </div>
+                    </form>
+                </div>
+
+                <!-- Expense History Table -->
+                <h3 class="text-xl font-semibold text-gray-800 mb-4">Expense History</h3>
+                <div class="w-full bg-white shadow-md rounded-xl overflow-auto">
+                    <table class="w-full">
+                        <thead class="bg-gray-50">
+                            <tr>
+                                <th class="text-left py-3 px-4 sm:px-6 text-sm font-semibold text-gray-600 uppercase">Date & Time</th>
+                                <th class="text-left py-3 px-4 sm:px-6 text-sm font-semibold text-gray-600 uppercase">Product/Service</th>
+                                <th class="text-left py-3 px-4 sm:px-6 text-sm font-semibold text-gray-600 uppercase">Quantity</th>
+                                <th class="text-left py-3 px-4 sm:px-6 text-sm font-semibold text-gray-600 uppercase">Total Price</th>
+                                <th class="text-left py-3 px-4 sm:px-6 text-sm font-semibold text-gray-600 uppercase">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="expenses-table-body" class="divide-y divide-gray-200">
+                            <!-- Rows will be injected here by renderExpensesPage() -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+
+            <!-- ============================= -->
+            <!-- Analysis Page                 -->
+            <!-- ============================= -->
+            <div id="page-analysis" class="hidden">
+                <h2 class="hidden md:block text-3xl font-bold text-gray-800 mb-8">Sales Analysis</h2>
+
+                <!-- Filter controls -->
+                <div class="bg-white p-6 rounded-xl shadow-lg w-full mx-auto mb-6">
+                    <div class="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
+                        <div>
+                            <label for="analysis-product-select" class="block text-sm font-medium text-gray-700 mb-1">Select Product (for Line Chart)</label>
+                            <select id="analysis-product-select" class="w-full px-3 py-3 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white" required>
+                                <!-- Product options will be inserted here by populateAnalysisDropdown() -->
+                            </select>
+                        </div>
+                        <div>
+                            <label for="analysis-start-date" class="block text-sm font-medium text-gray-700 mb-1">Start Date</label>
+                            <input type="date" id="analysis-start-date" class="w-full px-3 py-3 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                        </div>
+                        <div>
+                            <label for="analysis-end-date" class="block text-sm font-medium text-gray-700 mb-1">End Date</label>
+                            <input type="date" id="analysis-end-date" class="w-full px-3 py-3 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                        </div>
+                        <button id="analysis-filter-btn" class="w-full bg-blue-600 text-white py-3 px-6 rounded-lg font-semibold text-lg hover:bg-blue-700 transition duration-200 shadow-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-50">
+                            Apply Filter
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Summary Card -->
+                <div class="bg-white p-6 rounded-xl shadow-lg w-full max-w-xs mx-auto md:mx-0 md:max-w-none mb-6">
+                    <div class="flex justify-between items-center">
+                        <span class="text-lg font-medium text-gray-600">Total Units Sold (Selected Product):</span>
+                        <span id="analysis-total-sold" class="text-3xl font-bold text-blue-600">0 units</span>
+                    </div>
+                </div>
+
+
+                <!-- Line Chart Container -->
+                <div class="bg-white p-6 md:p-8 rounded-xl shadow-lg w-full mx-auto">
+                    <div class="relative h-64 md:h-96">
+                        <canvas id="sales-chart"></canvas>
+                    </div>
+                </div>
+
+                <!-- Pie Chart Container -->
+                <div class="bg-white p-6 md:p-8 rounded-xl shadow-lg w-full mx-auto mt-6">
+                    <h3 class="text-xl font-semibold text-gray-800 mb-4 text-center">Total Sales Contribution (in range)</h3>
+                    <div class="relative h-64 md:h-96">
+                        <canvas id="sales-pie-chart"></canvas>
+                    </div>
+                </div>
+            </div>
+
+
+        </main>
+        
+        <!-- ============================= -->
+        <!-- NEW: PIN Lock Modal           -->
+        <!-- ============================= -->
+        <div id="pin-modal" class="fixed inset-0 modal-backdrop z-50 hidden flex items-center justify-center p-4">
+            <div class="bg-white p-8 rounded-xl shadow-lg w-full max-w-sm">
+                <h3 class="text-2xl font-bold text-gray-800 mb-6 text-center">Enter PIN</h3>
+                <p class="text-center text-gray-600 mb-6">This section is locked. Please enter your PIN to continue.</p>
+                <form id="pin-form">
+                    <div class="space-y-4">
+                        <div>
+                            <label for="pin-input" class="block text-sm font-medium text-gray-700 mb-1 sr-only">PIN</label>
+                            <input type="password" id="pin-input" pattern="[0-9]*" inputmode="numeric" maxlength="4" class="w-full text-center text-2xl tracking-[.5em] px-3 py-3 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent" required>
+                        </div>
+                    </div>
+                    <!-- Modal Buttons -->
+                    <div class="mt-8 flex flex-col space-y-3">
+                        <button type="submit" id="pin-submit-btn" class="w-full bg-blue-600 text-white py-3 px-5 rounded-lg font-semibold hover:bg-blue-700 transition duration-200 shadow-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-50">
+                            Unlock
+                        </button>
+                        <button type="button" id="pin-cancel-btn" class="w-full bg-gray-200 text-gray-700 py-3 px-5 rounded-lg font-semibold hover:bg-gray-300 transition duration-200 focus:outline-none focus:ring-2 focus:ring-gray-400 focus:ring-opacity-50">
+                            Cancel
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+            
+        <!-- ================================== -->
+        <!-- Add/Edit Product Modal           -->
+        <!-- ================================== -->
+        <div id="product-modal" class="fixed inset-0 modal-backdrop z-40 hidden flex items-center justify-center p-4">
+            <div class="bg-white p-8 rounded-xl shadow-lg w-full max-w-md">
+                <h3 id="product-modal-title" class="text-2xl font-bold text-gray-800 mb-6">Add New Product</h3>
+                <form id="product-form">
+                    <div class="space-y-4">
+                        <div>
+                            <label for="modal-product-name" class="block text-sm font-medium text-gray-700 mb-1">Product Name</label>
+                            <input type="text" id="modal-product-name" placeholder="e.g., Jowar Poha" class="w-full px-3 py-3 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent" required>
+                        </div>
+                        <div>
+                            <label for="modal-product-sku" class="block text-sm font-medium text-gray-700 mb-1">SKU (Stock Keeping Unit)</label>
+                            <input type="text" id="modal-product-sku" placeholder="e.g., JP-500G" class="w-full px-3 py-3 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent" required>
+                        </div>
+                        <div>
+                            <label for="modal-product-stock" class="block text-sm font-medium text-gray-700 mb-1">Current Stock</label>
+                            <input type="number" id="modal-product-stock" placeholder="100" class="w-full px-3 py-3 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent" required min="0">
+                        </div>
+                    </div>
+                    <!-- Modal Buttons -->
+                    <div class="mt-8 flex justify-end space-x-3">
+                        <button type="button" id="modal-cancel-btn" class="bg-gray-200 text-gray-700 py-2 px-5 rounded-lg font-semibold hover:bg-gray-300 transition duration-200 focus:outline-none focus:ring-2 focus:ring-gray-400 focus:ring-opacity-50">
+                            Cancel
+                        </button>
+                        <button type="submit" id="modal-save-btn" class="bg-blue-600 text-white py-2 px-5 rounded-lg font-semibold hover:bg-blue-700 transition duration-200 shadow-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-50">
+                            Save Product
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+        
+        <!-- ============================= -->
+        <!-- Edit Expense Modal            -->
+        <!-- ============================= -->
+        <div id="edit-expense-modal" class="fixed inset-0 modal-backdrop z-40 hidden flex items-center justify-center p-4">
+            <div class="bg-white p-8 rounded-xl shadow-lg w-full max-w-md">
+                <h3 class="text-2xl font-bold text-gray-800 mb-6">Edit Expense</h3>
+                <form id="edit-expense-form">
+                    <div class="space-y-4">
+                        <div>
+                            <label for="edit-expense-product-name" class="block text-sm font-medium text-gray-700 mb-1">Product / Service Name</label>
+                            <input type="text" id="edit-expense-product-name" class="w-full px-3 py-3 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent" required>
+                        </div>
+                        <div>
+                            <label for="edit-expense-quantity" class="block text-sm font-medium text-gray-700 mb-1">Quantity (optional)</label>
+                            <input type="number" id="edit-expense-quantity" class="w-full px-3 py-3 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent" min="0">
+                        </div>
+                        <div>
+                            <label for="edit-expense-total-price" class="block text-sm font-medium text-gray-700 mb-1">Total Purchase Price</label>
+                            <div class="relative">
+                                <span class="absolute inset-y-0 left-0 pl-3 flex items-center text-gray-500">₹</span>
+                                <input type="number" id="edit-expense-total-price" class="w-full pl-7 pr-3 py-3 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent" required min="0" step="0.01">
+                            </div>
+                        </div>
+                    </div>
+                    <!-- Modal Buttons -->
+                    <div class="mt-8 flex justify-end space-x-3">
+                        <button type="button" id="edit-expense-cancel-btn" class="bg-gray-200 text-gray-700 py-2 px-5 rounded-lg font-semibold hover:bg-gray-300 transition duration-200 focus:outline-none focus:ring-2 focus:ring-gray-400 focus:ring-opacity-50">
+                            Cancel
+                        </button>
+                        <button type="submit" class="bg-blue-600 text-white py-2 px-5 rounded-lg font-semibold hover:bg-blue-700 transition duration-200 shadow-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-50">
+                            Save Changes
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- ============================= -->
+        <!-- Confirmation Modal            -->
+        <!-- ============================= -->
+        <div id="confirmation-modal" class="fixed inset-0 modal-backdrop z-50 hidden flex items-center justify-center p-4">
+            <div class="bg-white p-8 rounded-xl shadow-lg w-full max-w-md">
+                <h3 class="text-2xl font-bold text-gray-800 mb-4">Are you sure?</h3>
+                <p id="confirmation-message" class="text-gray-600 mb-6">You will not be able to recover this item.</p>
+                <!-- Modal Buttons -->
+                <div class="mt-8 flex justify-end space-x-3">
+                    <button type="button" id="confirmation-cancel-btn" class="bg-gray-200 text-gray-700 py-2 px-5 rounded-lg font-semibold hover:bg-gray-300 transition duration-200 focus:outline-none focus:ring-2 focus:ring-gray-400 focus:ring-opacity-50">
+                        Cancel
+                    </button>
+                    <button type="button" id="confirmation-confirm-btn" class="bg-red-600 text-white py-2 px-5 rounded-lg font-semibold hover:bg-red-700 transition duration-200 shadow-md focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-opacity-50">
+                        Delete
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Toast Notification -->
+        <div id="toast" class="bg-green-600 text-white">
+            Stock updated successfully!
+        </div>
+
+    </div>
+    
+    <!-- 
+        All JavaScript logic, including Firebase, is now in the 
+        <script type="module"> tag in the <head> section.
+    -->
+</body>
+</html>
+
+
+
