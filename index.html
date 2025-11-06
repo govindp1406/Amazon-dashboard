@@ -665,7 +665,7 @@
 
         // --- Global Firebase State ---
         let app, db, auth;
-        let userId = null;
+        // let userId = null; // No longer needed for paths
         let isAuthReady = false;
         
         // --- Global App State (now populated by Firebase) ---
@@ -677,7 +677,7 @@
         let targetPage = null; // Page to go to after unlock
         
         // --- Firestore Collection References ---
-        let productsCollection, expensesCollection;
+        let productsCollection, expensesCollection; // Will be set after auth
 
         // --- Global Chart Variables ---
         let salesChartInstance = null;
@@ -1967,12 +1967,14 @@
          */
         function attachFirestoreListeners() {
             // Define collection paths
-            // UPDATED: Removed /artifacts/${appId}
-            productsCollection = collection(db, `/users/${userId}/products`);
-            expensesCollection = collection(db, `/users/${userId}/expenses`);
+            // ***********************************************
+            // **FIX: Using public root collections**
+            // ***********************************************
+            productsCollection = collection(db, "products");
+            expensesCollection = collection(db, "expenses");
 
             // --- Product Listener ---
-            const productsQuery = query(productsCollection); // Add orderBy if needed, e.g., orderBy("createdAt", "desc")
+            const productsQuery = query(productsCollection); 
             onSnapshot(productsQuery, (snapshot) => {
                 products = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                 
@@ -1992,7 +1994,7 @@
             });
 
             // --- Expenses Listener ---
-            const expensesQuery = query(expensesCollection); // Add orderBy if needed
+            const expensesQuery = query(expensesCollection); 
             onSnapshot(expensesQuery, (snapshot) => {
                 expenses = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                 
@@ -2035,7 +2037,7 @@
                 onAuthStateChanged(auth, (user) => {
                     if (user && !isAuthReady) {
                         console.log('User is signed in:', user.uid);
-                        userId = user.uid;
+                        // userId = user.uid; // No longer needed for paths
                         isAuthReady = true;
                         
                         // User is ready, attach data listeners
